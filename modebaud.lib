@@ -1,0 +1,38 @@
+; =====================================================================
+;  MODEBAUD.LIB - equates para los bits del "mode byte" de CHRTBL,
+;  reconstruido desde el Apendice G del CP/M Plus System Guide (DRI,
+;  1983) -- el fichero original no venia en ninguno de los tres zips de
+;  cpm.z80.de, solo se referenciaba desde BIOSKRNL.ASM ("maclib
+;  modebaud"). Uso real en BIOSKRNL.ASM minimo (solo ?devin lo
+;  menciona de pasada), asi que el riesgo de una reconstruccion
+;  incorrecta es bajo, pero si GENCPM/el enlazado dan problemas raros
+;  relacionados con @ctbl o el byte de modo de un dispositivo, revisar
+;  esto primero contra el Apendice G original.
+; =====================================================================
+
+mb$input        equ 00000001b   ; el dispositivo admite entrada
+mb$output       equ 00000010b   ; el dispositivo admite salida
+mb$in$out       equ mb$input+mb$output
+mb$soft$baud    equ 00000100b   ; velocidad seleccionable por software
+mb$serial       equ 00001000b   ; el dispositivo puede usar protocolo
+mb$xonxoff      equ 00010000b   ; protocolo XON/XOFF activo -- nombre real
+                                 ; confirmado por su uso en BIOSKRNL.ASM
+                                 ; (el PDF extraido decia "mb$xon$xoff",
+                                 ; mal separado por el propio OCR/extraccion)
+
+baud$none       equ 0           ; sin velocidad asociada
+baud$50         equ 1
+baud$75         equ 2
+baud$110        equ 3
+baud$134        equ 4           ; 134.5 baudios
+baud$150        equ 5
+baud$300        equ 6
+baud$600        equ 7
+baud$1200       equ 8
+baud$1800       equ 9
+baud$2400       equ 10
+baud$3600       equ 11
+baud$4800       equ 12
+baud$7200       equ 13
+baud$9600       equ 14
+baud$19200      equ 15

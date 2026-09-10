@@ -1,0 +1,14 @@
+# Windows
+Thumbs.db
+Desktop.ini
+
+# salidas de ensamblado (zmac), regenerables con los build_*.bat
+*.bin
+*.cim
+*.lst
+*.rel
+*.hex
+*.sym
+
+# trazas de depuracion, no son fuente
+traza.txt
