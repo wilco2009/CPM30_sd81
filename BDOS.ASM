@@ -50,55 +50,50 @@ ctl	equ	5eh	; up arrow
 		org	0000h
 base		equ	$
 
-; Base page definitions
+; CPM3_SD81: bnkbdos$pg/resbdos$pg/bios$pg (offsets relativos a "base")
+; quitados -- ver la nota de mas abajo, "System Control Block equates",
+; y bank.z80/RESBDOS.ASM. scb$pg SI se mantiene, pero apuntando a
+; nuestra direccion real (banco 7, $E000 -- la misma base que usa nuestro
+; SCB.ASM para @CIVEC etc: los rangos de offset no se solapan, $22-$62
+; ahi, $90-$FE aqui abajo -- las dos mitades de la misma estructura).
+scb$pg		equ	0E000h
 
-bnkbdos$pg	equ	base+0fc00h
-resbdos$pg	equ	base+0fd00h
-scb$pg		equ	base+0fb00h
-bios$pg		equ	base+0ff00h
-
-; Bios equates
-
-bios		equ	bios$pg
-bootf		equ	bios$pg 	; 00. cold boot function
-
-; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
-
-wbootf		equ	scb$pg+68h	; 01. warm boot function
-constf		equ	scb$pg+6eh  	; 02. console status function
-coninf		equ	scb$pg+74h	; 03. console input function
-conoutf		equ	scb$pg+7ah	; 04. console output function
-listf		equ	scb$pg+80h	; 05. list output function
-
-; CPM3_SD81: [else] (linea 73)
-; CPM3_SD81: [endif] (linea 81)
-
-punchf		equ	bios$pg+18	; 06. punch output function
-readerf		equ	bios$pg+21	; 07. reader input function
-homef		equ	bios$pg+24	; 08. disk home function
-seldskf		equ	bios$pg+27	; 09. select disk function
-settrkf		equ	bios$pg+30	; 10. set track function
-setsecf		equ	bios$pg+33	; 11. set sector function
-setdmaf		equ	bios$pg+36	; 12. set dma function
-readf		equ	bios$pg+39	; 13. read disk function
-writef		equ	bios$pg+42	; 14. write disk function
-liststf		equ	bios$pg+45	; 15. list status function
-sectran		equ	bios$pg+48	; 16. sector translate
-conoutstf	equ	bios$pg+51	; 17. console output status function
-auxinstf	equ	bios$pg+54	; 18. aux input status function
-auxoutstf	equ	bios$pg+57	; 19. aux output status function
-devtblf		equ	bios$pg+60	; 20. retunr device table address fx
-devinitf	equ	bios$pg+63	; 21. initialize device function
-drvtblf		equ	bios$pg+66	; 22. return drive table address
-multiof		equ	bios$pg+69	; 23. multiple i/o function
-flushf		equ	bios$pg+72	; 24. flush function
-movef		equ	bios$pg+75	; 25. memory move function
-timef		equ	bios$pg+78	; 26. system get/set time function
-selmemf		equ	bios$pg+81	; 27. select memory function
-setbnkf		equ	bios$pg+84	; 28. set dma bank function
-xmovef		equ	bios$pg+87	; 29. extended move function
-
-; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
+; Bios equates -- alias directos a bank.z80 (tabla de saltos real,
+; duplicada en banco 3 para ser alcanzable desde cualquier contexto).
+; Sustituye tanto al bios$pg+N generico como al caso especial "if
+; BANKED" (wbootf..listf via scb$pg -- ese mecanismo dependia de que
+; GENSYS grabase trampolines de verdad en el SCB, que no tenemos; nuestra
+; tabla de saltos ya resuelve el mismo problema de otra forma).
+bootf		equ	?boot		; 00. cold boot function
+wbootf		equ	?wboot		; 01. warm boot function
+constf		equ	?const		; 02. console status function
+coninf		equ	?conin		; 03. console input function
+conoutf		equ	?cono		; 04. console output function
+listf		equ	?list		; 05. list output function
+punchf		equ	?auxo		; 06. punch output function
+readerf		equ	?auxi		; 07. reader input function
+homef		equ	?home		; 08. disk home function
+seldskf		equ	?sldsk		; 09. select disk function
+settrkf		equ	?sttrk		; 10. set track function
+setsecf		equ	?stsec		; 11. set sector function
+setdmaf		equ	?stdma		; 12. set dma function
+readf		equ	?read		; 13. read disk function
+writef		equ	?write		; 14. write disk function
+liststf		equ	?lists		; 15. list status function
+sectran		equ	?sctrn		; 16. sector translate
+conoutstf	equ	?conos		; 17. console output status function
+auxinstf	equ	?auxis		; 18. aux input status function
+auxoutstf	equ	?auxos		; 19. aux output status function
+devtblf		equ	?dvtbl		; 20. return device table address fx
+devinitf	equ	?devin		; 21. initialize device function
+drvtblf		equ	?drtbl		; 22. return drive table address
+multiof		equ	?mltio		; 23. multiple i/o function
+flushf		equ	?flush		; 24. flush function
+movef		equ	?mov		; 25. memory move function
+timef		equ	?tim		; 26. system get/set time function
+selmemf		equ	?bnksl		; 27. select memory function
+setbnkf		equ	?stbnk		; 28. set dma bank function
+xmovef		equ	?xmov		; 29. extended move function
 
 ; System Control Block equates
 
@@ -180,27 +175,15 @@ commonbase	equ	scb$pg+0f9h
 error		equ	scb$pg+0fbh	;jmp error$sub
 bdosadd		equ	scb$pg+0feh
 
-; Resbdos equates
-
-resbdos		equ	resbdos$pg
-move$out	equ	resbdos$pg+9	; a=bank #, hl=dest, de=srce
-move$tpa	equ	resbdos$pg+0ch	; a=bank #, hl=dest, de=srce
-srch$hash	equ	resbdos$pg+0fh	; a=bank #, hl=hash table addr
-hashmx		equ	resbdos$pg+12h	; max hash search dcnt
-rd$dir$flag	equ	resbdos$pg+14h	; directory read flag
-make$xfcb	equ	resbdos$pg+15h	; make function flag
-find$xfcb	equ	resbdos$pg+16h	; search function flag
-xdcnt		equ	resbdos$pg+17h	; dcnt save for empty fcb, 
-					; user 0 fcb, or xfcb
-xdmaad		equ	resbdos$pg+19h	; resbdos dma copy area addr
-curdma		equ	resbdos$pg+1bh	; current dma
-copy$cr$only	equ	resbdos$pg+1dh	; dont restore fcb flag
-user$info	equ	resbdos$pg+1eh	; user fcb address
-kbchar		equ	resbdos$pg+20h  ; conbdos look ahead char
-qconinx		equ	resbdos$pg+21h	; qconin mov a,m routine
-
-; CPM3_SD81: [else] (linea 209)
-; CPM3_SD81: [endif] (linea 214)
+; CPM3_SD81: bloque "Resbdos equates" (resbdos$pg+N: move$out, move$tpa,
+; srch$hash, hashmx, rd$dir$flag, make$xfcb, find$xfcb, xdcnt, xdmaad,
+; curdma, copy$cr$only, user$info, kbchar, qconinx) quitado entero --
+; RESBDOS.ASM (concatenado en el mismo ensamblado, ver bdos_full.z80)
+; define esos mismos nombres directamente como etiquetas reales, sin
+; falta indireccion via resbdos$pg. Nota: RESBDOS.ASM originalmente
+; llamaba "rd$dir" a este flag, pero ese nombre ya lo usa BDOS30.ASM
+; como alias de la RUTINA "rddir" (homonimos por casualidad en la
+; fuente DRI) -- renombrado ahi a "rd$dir$flag" para evitar el choque.
 
 ;
 serial: db	'654321'
@@ -317,53 +300,15 @@ mult$fxs:	db	20,21,33,34,40,0
 
 	maclib	makedate
 
-; CPM3_SD81: alias para erratas de transcripcion en la fuente DRI/
-; Caldera (un '$' insertado o que falta entre la definicion real y las
-; llamadas, en un sentido u otro -- ver memory_map.md). No se toca el
-; codigo disperso, solo se anade el nombre que faltaba.
-ccpflgs	equ	ccp$flgs
-common$base	equ	commonbase
-comp$cdr	equ	compcdr
-copy$dir$loc	equ	copy$dirloc
-dir$max	equ	dirmax
-dircnt	equ	dir$cnt
-diskwrite0	equ	disk$write0
-dta$bcba	equ	dtabcba
-error$mode	equ	errormode
-get$dm	equ	getdm
-get$dptra	equ	getdptra
-get$exta	equ	getexta
-getbuffa	equ	get$buffa
-getdtba	equ	get$dtba
-gets1	equ	get$s1
-getxfcb1	equ	get$xfcb1
-hashtbla	equ	hash$tbla
-lastdrive	equ	last$drive
-mult$cnt	equ	multcnt
-mult$iof	equ	multiof
-parse$pw	equ	parsepw
-phy$msk	equ	phymsk
-rd$dir	equ	rddir
-reset37x	equ	reset$37x
-save$pos	equ	SAVEPOS
-search$n	equ	searchn
-seek$dir	equ	seekdir
-set$lret1	equ	setlret1
-testvector	equ	test$vector
-user0pass	equ	user0$pass
-set$alloc$bit	equ	setallocbit
-search$loop	equ	searchloop
-delete$10	equ	delete10
-setenddir	equ	set$end$dir
-read$n0	equ	readn0
-do$new$line	equ	do$newline
-out$delim	equ	outdelim
-; dirbios4 (BDOS30.ASM, funcion 50 "Direct BIOS call", rara vez usada):
-; falta directamente en la fuente -- solo existen dir$bios1/2/3. Por la
-; logica del salto (cpi 9 / jnz dir$bios2 -- si es igual, cae directo
-; aqui), lo mas razonable es que apunte a dir$bios2; sin verificar contra
-; hardware real, es una funcion de muy bajo uso.
-dirbios4	equ	dir$bios2
+; CPM3_SD81: bloque de alias movido al final del fichero (ver el final
+; de BDOS.ASM) -- casi todos son referencias HACIA DELANTE (apuntan a
+; etiquetas definidas miles de bytes mas abajo), y un "equ" hacia
+; delante tan pronto en el fichero desestabilizaba la resolucion de
+; direcciones en varias pasadas (confirmado: causaba "Phase error" en
+; sitios sin relacion aparente, como "bdose2" unas pocas lineas mas
+; arriba, y "Mult. def." fantasma en RESBDOS.ASM). Los alias en si no
+; cambian de significado por estar mas abajo -- el codigo que los usa
+; se resuelve igual sea cual sea el orden del "equ" en el fichero.
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 	@LCOPY
 	@BDATE
@@ -9268,5 +9213,71 @@ last:
 
 ; CPM3_SD81: [else] (linea 11589)
 ; CPM3_SD81: [endif] (linea 11631)
+
+; CPM3_SD81: alias para erratas de transcripcion en la fuente DRI/
+; Caldera (un '$' insertado o que falta entre la definicion real y las
+; llamadas, en un sentido u otro -- ver memory_map.md). No se toca el
+; codigo disperso, solo se anade el nombre que faltaba. Movido aqui
+; (al final del fichero, backward-reference puro) porque como forward
+; reference desestabilizaba la resolucion de direcciones -- ver la
+; nota junto a "maclib makedate", mas arriba.
+ccpflgs	equ	ccp$flgs
+common$base	equ	commonbase
+comp$cdr	equ	compcdr
+copy$dir$loc	equ	copy$dirloc
+dir$max	equ	dirmax
+dircnt	equ	dir$cnt
+diskwrite0	equ	disk$write0
+dta$bcba	equ	dtabcba
+error$mode	equ	errormode
+get$dm	equ	getdm
+get$dptra	equ	getdptra
+get$exta	equ	getexta
+getbuffa	equ	get$buffa
+getdtba	equ	get$dtba
+gets1	equ	get$s1
+getxfcb1	equ	get$xfcb1
+hashtbla	equ	hash$tbla
+lastdrive	equ	last$drive
+mult$cnt	equ	multcnt
+mult$iof	equ	multiof
+parse$pw	equ	parsepw
+phy$msk	equ	phymsk
+rd$dir	equ	rddir
+reset37x	equ	reset$37x
+save$pos	equ	SAVEPOS
+search$n	equ	searchn
+seek$dir	equ	seekdir
+set$lret1	equ	setlret1
+testvector	equ	test$vector
+user0pass	equ	user0$pass
+; "bios" (direccion base de una tabla de saltos de zancada fija, usada
+; solo por la funcion 50 "Direct BIOS call" para calcular entradas por
+; aritmetica de offset) no tiene equivalente real: nuestra tabla de
+; saltos (bank.z80) no es de zancada fija (cada entrada mide lo que
+; mide, no siempre 3 B). func50 queda roto a proposito -- es una
+; funcion BDOS rara, de muy bajo uso (acceso directo al BIOS saltandose
+; la BDOS). Alias solo para que compile; NO llamar a funcion 50.
+bios	equ	?boot
+; xdmaad y srch$hash van en bdos_full.z80, DESPUES de "include
+; RESBDOS.ASM" -- apuntan a nombres que RESBDOS.ASM define (xdmaadd,
+; rb$search$hash), y como referencia hacia delante (RESBDOS.ASM va
+; despues de este fichero) desestabilizaban la resolucion de
+; direcciones (confirmado: tambien afectaba a "bdose2", sin relacion
+; aparente -- ver la nota general de mas arriba, junto a "maclib
+; makedate").
+set$alloc$bit	equ	setallocbit
+search$loop	equ	searchloop
+delete$10	equ	delete10
+setenddir	equ	set$end$dir
+read$n0	equ	readn0
+do$new$line	equ	do$newline
+out$delim	equ	outdelim
+; dirbios4 (BDOS30.ASM, funcion 50 "Direct BIOS call", rara vez usada):
+; falta directamente en la fuente -- solo existen dir$bios1/2/3. Por la
+; logica del salto (cpi 9 / jnz dir$bios2 -- si es igual, cae directo
+; aqui), lo mas razonable es que apunte a dir$bios2; sin verificar contra
+; hardware real, es una funcion de muy bajo uso.
+dirbios4	equ	dir$bios2
 
 		end

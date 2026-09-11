@@ -97,6 +97,16 @@ in_copy_font:
             ld   (2094), a
             ld   (2095), a
 
+            ; --- mc45_ext67: por defecto MC45 solo cubre los bloques
+            ; 4/5 (para no romper el salto nativo del BASIC en ROM a
+            ; DFILE+$8000, que sigue existiendo incluso en modo FAST) --
+            ; los bloques 6/7 (donde vive nuestro codigo en banco 7,
+            ; $E000-$FFFF: boot$1/set$jumps/bnksel/@cbnk, ver bank.z80/
+            ; BIOSKRNL.ASM) necesitan activarlo aparte.
+            ld   a, 170
+            ld   (2062), a       ; activar mc45_ext67 (bancos 6/7)
+
+            xor  a               ; restaurar A=0 (lo pisamos arriba)
             ld   (2056), a      ; desproteger bloque 0 + cerrar ventana MMIO
 
             ld   a, CMD_chars256

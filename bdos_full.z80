@@ -1,0 +1,56 @@
+; =====================================================================
+;  bdos_full.z80 - BDOS.ASM (CPMBDOS2+CONBDOS+BDOS30, banked) +
+;  RESBDOS.ASM (modulo residente banked), en el mismo ambito de
+;  ensamblado -- RESBDOS.ASM usa simbolos de BDOS.ASM (fx, dcnt, hash,
+;  bootf..xmovef, etc.) sin declararlos, ver la nota en RESBDOS.ASM.
+;  Prueba aislada antes de integrar en system.z80 -- org 0000h de
+;  momento (direcciones reales, pendiente).
+; =====================================================================
+
+            org  00000h
+
+; CPM3_SD81: stubs PROVISIONALES solo para esta prueba aislada -- los
+; nombres reales (?boot, etc.) los define bank.z80, que en el
+; ensamblado final (system.z80) ya esta presente antes de BDOS.ASM.
+; Quitar este bloque en cuanto se integre alli.
+?boot	equ	1
+?wboot	equ	1
+?const	equ	1
+?conin	equ	1
+?cono	equ	1
+?list	equ	1
+?auxo	equ	1
+?auxi	equ	1
+?home	equ	1
+?sldsk	equ	1
+?sttrk	equ	1
+?stsec	equ	1
+?stdma	equ	1
+?read	equ	1
+?write	equ	1
+?lists	equ	1
+?sctrn	equ	1
+?conos	equ	1
+?auxis	equ	1
+?auxos	equ	1
+?dvtbl	equ	1
+?devin	equ	1
+?drtbl	equ	1
+?mltio	equ	1
+?flush	equ	1
+?mov	equ	1
+?tim	equ	1
+?bnksl	equ	1
+?stbnk	equ	1
+?xmov	equ	1
+
+            include "BDOS.ASM"
+            include "RESBDOS.ASM"
+
+; CPM3_SD81: alias que BDOS.ASM necesita pero solo se pueden resolver
+; aqui (referencia hacia atras de verdad, con los dos ficheros ya
+; incluidos) -- ver la nota en BDOS.ASM junto a "bios equ ?boot".
+xdmaad		equ	xdmaadd
+srch$hash	equ	rb$search$hash
+
+            end

@@ -895,4 +895,55 @@ directamente, es cableado interno BIOS↔BDOS↔SCB.
 ensambla y enlaza APARTE del anterior (`resbdos3.spr`, no forma parte
 de `bnkbdos3.spr`) — trae `gets1`(`get$s1`)/`rd$dir`/`getxfcb1`/
 `seek$dir`/hash de directorio/etc., las rutinas que `BDOS.ASM` invoca
-vía `resbdos$pg+N`. Aún sin integrar (siguiente paso).
+vía `resbdos$pg+N`.
+
+## BDOS.ASM + RESBDOS.ASM: ensamblan limpios juntos (`bdos_full.z80`)
+
+Al integrar `RESBDOS.ASM` se descubrió que, pese a enlazarse aparte en
+el `GENCPM` real, SÍ hace falta compartir ámbito de ensamblado con
+`BDOS.ASM` en nuestro enfoque plano (usa `fx`/`dcnt`/`hash`/`bootf`
+etc. sin declararlos — la fuente original tampoco los declara con
+`extrn`, se apoya en que RMAC resuelve símbolos no definidos como
+externos al enlazar). Bugs encontrados y corregidos:
+
+- **`scb$pg`/`bios$pg`-relativos → alias directos.** `bios$pg+N`
+  (`bootf`..`xmovef`) ahora son alias a nuestra tabla de saltos real
+  (`?boot`..`?xmov`, `bank.z80`). `scb$pg` ahora vale `$E000` (la misma
+  base que `SCB.ASM`, confirmado que los rangos de offset no se
+  solapan — las dos mitades de la misma estructura real). Sin
+  necesidad de reservar almacenamiento explícito para los campos del
+  SCB: son solo direcciones hacia RAM real del banco 7, siempre
+  mapeada (igual que `@CIVEC` etc. en `SCB.ASM`).
+- **Bloque `resbdos$pg`-relativo eliminado de `BDOS.ASM`** — con
+  `RESBDOS.ASM` en el mismo ámbito, sus etiquetas reales
+  (`hashmx`/`make$xfcb`/`kbchar`/etc.) sirven directamente.
+- **Choques de nombre entre `BDOS.ASM` y `RESBDOS.ASM`** (dos módulos
+  que en DRI se enlazaban aparte, con sus propios ámbitos —
+  perfectamente normal ahí, pero un choque real al compartir uno
+  solo): `RESBDOS.ASM` tenía su propia copia de `SCB:`, `olog`/`rlog`
+  (redundante, eliminada — ver punto anterior) y sus propias rutinas
+  internas (`functab`/`func3`/`func6`-`func10`/`sta$ret`/`goback`/
+  `compare`/`subdh`/`hash$tbla`/`search$hash`(la de bajo nivel, DISTINTA
+  del envoltorio de alto nivel del mismo nombre en `BDOS.ASM`)/`aret`/
+  `entsp`/`serial`) que casualmente coinciden con nombres que
+  `BDOS.ASM` usa para OTRA cosa — renombradas con prefijo `rb$` en
+  `RESBDOS.ASM`. Un caso eran mayúsculas vs minúsculas (`CONSTX` en
+  `BDOS.ASM` vs `constx` en `RESBDOS.ASM` — `zmac` no distingue caso,
+  choca igual) — mismo tratamiento.
+- **Un `equ` como referencia hacia delante desestabiliza el ensamblado
+  en varias pasadas.** El bloque de ~40 alias por erratas de
+  transcripción estaba justo detrás de `maclib makedate`, muy al
+  principio del fichero — casi todos apuntaban a etiquetas definidas
+  miles de bytes más abajo. Eso causaba `Phase error` en sitios sin
+  relación aparente (`bdose2`, a solo 25 líneas de "arriba") y
+  `Mult. def.` fantasma en `RESBDOS.ASM`. Solución: mover el bloque
+  entero al final del fichero (referencia hacia atrás pura) — el orden
+  de un `equ` no cambia lo que significa, solo cuándo se resuelve.
+  `xdmaad`/`srch$hash` (apuntan a `RESBDOS.ASM`, que va *después* de
+  `BDOS.ASM`) tuvieron que ir aún más lejos: en `bdos_full.z80`,
+  después de incluir los dos ficheros.
+
+**Pendiente**: `org 0000h` sigue siendo un valor provisional — falta
+decidir la dirección real de la BDOS en nuestro mapa de páginas y
+completar la integración en `system.z80` (junto con `CCP3.ASM`, y
+resolver cómo `?ldccp` carga la CCP real desde disco).
