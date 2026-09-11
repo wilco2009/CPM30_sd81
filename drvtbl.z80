@@ -1,0 +1,102 @@
+; =====================================================================
+;  drvtbl.z80 - @dtbl (tabla de 16 unidades) + los 5 XDPH (A-D SD,
+;  E disco RAM) + sus DPB. Ver memory_map.md para el formato XDPH
+;  completo (offsets -10/-8/-6/-4/-2 respecto a cada dph_X) y de donde
+;  sale cada valor del DPB.
+;
+;  Zona de datos pura (ningun XDPH/DPB se ejecuta como codigo), asi que
+;  no hay problema de MC45 ni de duplicacion -- puede vivir en banco
+;  comun o en sistema indistintamente.
+; =====================================================================
+
+;            public @dtbl
+;            extrn  sd_write,sd_read,sd_login,sd_init
+;            extrn  ram_write,ram_read,ram_login,ram_init
+;            extrn  csv_a,csv_b,csv_c,csv_d
+;            extrn  alv_a,alv_b,alv_c,alv_d,alv_e
+
+; ---------------------------------------------------------------------
+;  DPB -- unidades SD (A-D): mismo core que el 2.2 (bios.z80), mas los
+;  tres campos que anade CP/M 3 (OFF/PSH/PSM).
+; ---------------------------------------------------------------------
+dpb_sd:     defw 26         ; SPT
+            defb 3          ; BSH
+            defb 7          ; BLM
+            defb 0          ; EXM
+            defw 242        ; DSM
+            defw 63         ; DRM
+            defb 0C0h       ; AL0
+            defb 0          ; AL1
+            defw 16         ; CKS (medio extraible)
+            defw 0          ; OFF
+            defb 0          ; PSH
+            defb 0          ; PSM
+
+; ---------------------------------------------------------------------
+;  DPB -- disco RAM (E): geometria propia (1 pista = 1 pagina fisica de
+;  8K = 64 sectores de 128B). Medio fijo -> CKS=8000h, sin CSV.
+; ---------------------------------------------------------------------
+dpb_ram:    defw 64         ; SPT
+            defb 6          ; BSH  (BLS=8192 = 2^(6+7))
+            defb 63         ; BLM
+            defb 7          ; EXM  (BLS=8192, DSM<256 -> EXM=7)
+            defw 48         ; DSM  (49 bloques, 0-48)
+            defw 255        ; DRM  (256 entradas de directorio)
+            defb 80h        ; AL0  (bloque 0 reservado para el directorio)
+            defb 0          ; AL1
+            defw 8000h      ; CKS  (medio fijo -- sin vector de checksum)
+            defw 0          ; OFF
+            defb 0          ; PSH
+            defb 0          ; PSM
+
+; ---------------------------------------------------------------------
+;  Tabla de unidades (16 palabras, A-P). F-P no existen (0).
+; ---------------------------------------------------------------------
+@dtbl:      defw dph_a,dph_b,dph_c,dph_d,dph_e
+            defw 0,0,0,0,0,0,0,0,0,0,0      ; F-P
+
+; ---------------------------------------------------------------------
+;  XDPH A-D: SD, comparten dpb_sd; cada una su propio CSV/ALV.
+; ---------------------------------------------------------------------
+xdph_a:     defw sd_write,sd_read,sd_login,sd_init
+            defb 0,0                        ; UNIT=0 (A), TYPE
+dph_a:      defw 0                          ; XLT (sin tabla de skew)
+            defs 9,0                        ; scratch BDOS
+            defb 0                          ; MF
+            defw dpb_sd, csv_a, alv_a, 0,0,0
+            defb 0                          ; HBANK
+
+xdph_b:     defw sd_write,sd_read,sd_login,sd_init
+            defb 1,0                        ; UNIT=1 (B)
+dph_b:      defw 0
+            defs 9,0
+            defb 0
+            defw dpb_sd, csv_b, alv_b, 0,0,0
+            defb 0
+
+xdph_c:     defw sd_write,sd_read,sd_login,sd_init
+            defb 2,0                        ; UNIT=2 (C)
+dph_c:      defw 0
+            defs 9,0
+            defb 0
+            defw dpb_sd, csv_c, alv_c, 0,0,0
+            defb 0
+
+xdph_d:     defw sd_write,sd_read,sd_login,sd_init
+            defb 3,0                        ; UNIT=3 (D)
+dph_d:      defw 0
+            defs 9,0
+            defb 0
+            defw dpb_sd, csv_d, alv_d, 0,0,0
+            defb 0
+
+; ---------------------------------------------------------------------
+;  XDPH E: disco RAM, sin CSV (medio fijo).
+; ---------------------------------------------------------------------
+xdph_e:     defw ram_write,ram_read,ram_login,ram_init
+            defb 0,0                        ; UNIT=0 (unico, propio driver)
+dph_e:      defw 0
+            defs 9,0
+            defb 0
+            defw dpb_ram, 0, alv_e, 0,0,0
+            defb 0

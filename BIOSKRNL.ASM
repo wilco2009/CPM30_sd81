@@ -30,110 +30,75 @@ ctlS	equ 'S'-'@'
 
 ccp	equ 0100h	; Console Command Processor gets loaded into the TPA
 
-	cseg		; GENCPM puts CSEG stuff in common memory
+; 	cseg		; GENCPM puts CSEG stuff in common memory
 
 
     ; variables in system data page
 
-	extrn @covec,@civec,@aovec,@aivec,@lovec ; I/O redirection vectors
-	extrn @mxtpa				; addr of system entry point
-	extrn @bnkbf				; 128 byte scratch buffer
+;	extrn @covec,@civec,@aovec,@aivec,@lovec ; I/O redirection vectors
+;	extrn @mxtpa				; addr of system entry point
+;	extrn @bnkbf				; 128 byte scratch buffer
 
     ; initialization
 
-	extrn ?init			; general initialization and signon
-	extrn ?ldccp,?rlccp		; load & reload CCP for BOOT & WBOOT
+;	extrn ?init			; general initialization and signon
+;	extrn ?ldccp,?rlccp		; load & reload CCP for BOOT & WBOOT
 
     ; user defined character I/O routines
 
-	extrn ?ci,?co,?cist,?cost	; each take device in <B>
-	extrn ?cinit			; (re)initialize device in <C>
-	extrn @ctbl			; physical character device table
+;	extrn ?ci,?co,?cist,?cost	; each take device in <B>
+;	extrn ?cinit			; (re)initialize device in <C>
+;	extrn @ctbl			; physical character device table
 
     ; disk communication data items
 
-	extrn @dtbl			; table of pointers to XDPHs
-	public @adrv,@rdrv,@trk,@sect	; parameters for disk I/O
-	public @dma,@dbnk,@cnt		;    ''       ''   ''  ''
+;	extrn @dtbl			; table of pointers to XDPHs
+;	public @adrv,@rdrv,@trk,@sect	; parameters for disk I/O
+;	public @dma,@dbnk,@cnt		;    ''       ''   ''  ''
 
     ; memory control
 
-	public @cbnk			; current bank
-	extrn ?xmove,?move		; select move bank, and block move
-	extrn ?bank			; select CPU bank
+;	public @cbnk			; current bank
+;	extrn ?xmove,?move		; select move bank, and block move
+;	extrn ?bank			; select CPU bank
 
     ; clock support
 
-	extrn ?time			; signal time operation
+;	extrn ?time			; signal time operation
 
     ; general utility routines
 
-	public ?pmsg,?pdec	; print message, print number from 0 to 65535
-	public ?pderr		; print BIOS disk error message header
+;	public ?pmsg,?pdec	; print message, print number from 0 to 65535
+;	public ?pderr		; print BIOS disk error message header
 
 	maclib modebaud		; define mode bits
 
 
     ; External names for BIOS entry points
+    ;
+    ; CPM3_SD81: la tabla de saltos ?boot/?wboot/?const/... NO vive aqui.
+    ; Se movio a bank.z80 (duplicada al final del banco 3, igual que
+    ; ?bank/map1blk) porque programas de usuario reales (WordStar, Turbo
+    ; Pascal...) llaman a estas entradas DIRECTAMENTE, sin pasar por
+    ; BDOS, para ganar velocidad -- y esas llamadas ocurren con el
+    ; contexto "usuario" activo. Cada entrada en bank.z80 selecciona
+    ; "sistema" (xor a / call ?bank) ANTES de saltar al cuerpo real
+    ; (boot/wboot/const/... aqui abajo, sin modificar), asi que este
+    ; fichero se queda con la logica de DRI intacta, solo se declaran
+    ; publicas las etiquetas internas para que bank.z80 pueda llegar a
+    ; ellas con extrn.
 
-	public ?boot,?wboot,?const,?conin,?cono,?list,?auxo,?auxi
-	public ?home,?sldsk,?sttrk,?stsec,?stdma,?read,?write
-	public ?lists,?sctrn
-	public ?conos,?auxis,?auxos,?dvtbl,?devin,?drtbl
-	public ?mltio,?flush,?mov,?tim,?bnksl,?stbnk,?xmov
-
-
-    ; BIOS Jump vector.
-
-		; All BIOS routines are invoked by calling these
-		;	entry points.
-
-?boot:	jmp boot	; initial entry on cold start
-?wboot:	jmp wboot	; reentry on program exit, warm start
-
-?const:	jmp const	; return console input status
-?conin:	jmp conin	; return console input character
-?cono:	jmp conout	; send console output character
-?list:	jmp list	; send list output character
-?auxo:	jmp auxout	; send auxilliary output character
-?auxi:	jmp auxin	; return auxilliary input character
-
-?home:	jmp home	; set disks to logical home
-?sldsk:	jmp seldsk	; select disk drive, return disk parameter info
-?sttrk:	jmp settrk	; set disk track
-?stsec:	jmp setsec	; set disk sector
-?stdma:	jmp setdma	; set disk I/O memory address
-?read:	jmp read	; read physical block(s)
-?write:	jmp write	; write physical block(s)
-
-?lists:	jmp listst	; return list device status
-?sctrn:	jmp sectrn	; translate logical to physical sector
-
-?conos:	jmp conost	; return console output status
-?auxis:	jmp auxist	; return aux input status
-?auxos:	jmp auxost	; return aux output status
-?dvtbl:	jmp devtbl	; return address of device def table
-?devin:	jmp ?cinit	; change baud rate of device
-
-?drtbl:	jmp getdrv	; return address of disk drive table
-?mltio:	jmp multio	; set multiple record count for disk I/O
-?flush:	jmp flush	; flush BIOS maintained disk caching
-
-?mov:	jmp ?move	; block move memory to memory
-?tim:	jmp ?time	; Signal Time and Date operation
-?bnksl:	jmp bnksel	; select bank for code execution and default DMA
-?stbnk:	jmp setbnk	; select different bank for disk I/O DMA operations.
-?xmov:	jmp ?xmove	; set source and destination banks for one operation
-
-	jmp 0		; reserved for future expansion
-	jmp 0		; reserved for future expansion
-	jmp 0		; reserved for future expansion
+;	public boot,wboot,const,conin,conout,list,auxout,auxin
+;	public home,seldsk,settrk,setsec,setdma,read,write
+;	public listst,sectrn
+;	public conost,auxist,auxost,devtbl,getdrv
+;	public multio,flush,bnksel,setbnk
 
 
 	; BOOT
 	;	Initial entry point for system startup.
 
-	dseg	; this part can be banked
+; 	dseg	; this part can be banked
 
 boot:
 	lxi sp,boot$stack
@@ -181,7 +146,31 @@ d$init$next:
 	jnz d$init$loop	; and loop for each drive
 	jmp boot$1
 
-	cseg	; following in resident memory
+; 	cseg	; following in resident memory
+;
+; CPM3_SD81: el "cseg" original de DRI significa "memoria comun de
+; verdad" (banco 7, $E000-$FFFF, fijo en ambos contextos) -- NO
+; duplicacion como hicimos con ?bank/map1blk/la tabla de saltos. Hace
+; falta de verdad aqui: set$jumps cambia de banco A MITAD de su propia
+; ejecucion (mvi a,1/call ?bnksl, para dejar "usuario" seleccionado
+; antes de cargar la CCP en su TPA) y ?LUEGO SIGUE ejecutando mas
+; codigo (escribir los vectores de pagina cero) -- si ese codigo (y la
+; PILA que usa, boot$stack) viviera en el banco 3 normal, en cuanto el
+; banco cambia bajo sus pies la CPU pasa a buscar instrucciones (y a
+; hacer pop del "ret") en la pagina de usuario, que nunca tiene este
+; codigo cargado -> ejecucion de basura (confirmado en hardware: PC se
+; iba a $FFFF al hacer "ret" justo despues del cambio de banco). En
+; banco 7 el problema no existe: ?bank solo reprograma los bancos 0-6,
+; el 7 se queda igual pase lo que pase.
+;
+; $F200: hueco libre en el banco 7 (ver chario.z80/init.z80) entre el
+; final de DFILE_val ($EA00 + 24*81 = $F198) y FONT_ADDR ($F800).
+; Requiere MC45 + sfast_mode_en activos para el fetch de instrucciones
+; en esta zona (A14=1) -- ambos ya estan activos en este punto: MC45
+; desde "start" (system.z80, antes de ?boot) y sfast_mode_en desde el
+; POKE 2045,174 de ?init (init.z80), que se ejecuta ANTES de boot$1.
+
+	org 0F200h
 
 boot$1:
 	call set$jumps
@@ -558,7 +547,18 @@ xofflist	db	-1,-1,-1,-1,-1,-1,-1,-1		; ctl-s clears to zero
 
 
 
-	dseg	; following resides in banked memory
+; 	dseg	; following resides in banked memory
+;
+; CPM3_SD81: de vuelta a memoria banked normal (sistema, banco 3) --
+; solo el bloque de arriba (boot$1..bnksel+xofflist, mas boot$stack)
+; necesitaba banco 7. Volvemos a $6058, la direccion que le habria
+; tocado a este bloque si no hubieramos insertado el "org" de arriba
+; (justo detras de "jmp boot$1") -- asi todo lo de aqui abajo
+; (seldsk..flush, @adrv..@dbnk) y los ficheros que vienen despues
+; (bank.z80, etc.) mantienen las mismas direcciones que antes de este
+; cambio.
+
+	org 06058h
 
 
 
@@ -769,9 +769,31 @@ sector$msg	db	', S-',0
 @dbnk	db	0		; bank for DMA operations
 
 
-	cseg	; common memory
+; 	cseg	; common memory
+;
+; CPM3_SD81: @cbnk tiene el mismo problema que boot$1 (ver arriba) pero
+; con una variable en vez de con codigo: bnksel hace "sta @cbnk" ANTES
+; de que ?bank cambie de banco -- es decir, escribe en la copia del
+; banco 3 que esta activa EN ESE MOMENTO (la que se esta abandonando).
+; Si @cbnk viviera en banco 3 normal, la copia de la pagina de destino
+; nunca se actualiza, y una lectura posterior de @cbnk desde el otro
+; contexto leeria basura/desactualizado -- mismo tipo de aliasing por
+; pagina, aqui en un dato en vez de en codigo. En banco 7 (comun, banco
+; 3 no lo toca) esto no puede pasar. $E064: justo detras de las
+; variables del SCB (SCB.ASM, @MXTPA termina en $E064).
+
+	org 0E064h
 
 @cbnk	db	0		; bank for processor operations
 
+; CPM3_SD81: @cbnk era el ultimo byte antes de este "org 0E064h" (ver
+; arriba) -- sin este "org" de vuelta, todo lo que se ensambla despues
+; de este fichero (SCB.ASM no ocupa bytes, son puros "equ"; bank.z80,
+; move.z80, diskio.z80, drvtbl.z80, chario.z80, init.z80) empezaria a
+; colocarse en banco 7 a partir de $E065, chocando con ATTR_val/
+; DFILE_val/FONT_ADDR. $62E9 es donde continuaba la secuencia antes de
+; mover boot$1/@cbnk (ahi es donde caia dup_switcher, bank.z80).
+
+	org 062E9h
 
 	end

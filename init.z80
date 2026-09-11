@@ -1,0 +1,203 @@
+; =====================================================================
+;  init.z80 - ?init (arranque real: video + FULL_PAGING + duplicar el
+;  switcher) + ?ldccp/?rlccp (de momento un STUB: no tenemos CCP3.ASM
+;  ensamblado todavia, asi que en vez de cargar la CCP de verdad
+;  imprimimos un mensaje y nos quedamos parados -- primer objetivo
+;  real: llegar hasta aqui en hardware real).
+;
+;  ?init se llama UNA vez desde BIOSKRNL.ASM (boot:), DESPUES del bucle
+;  de ?cinit (16 veces, no-op para nosotros) y ANTES del bucle de INIT
+;  de disco (sd_init/ram_init, tambien no-op) -- osea, nada depende de
+;  que el video este listo antes de que esta rutina lo deje listo.
+;
+;  Secuencia de video: identica a boot_cpm.asm/banktest.asm, ya
+;  validada en hardware real -- incluida la leccion de banktest.asm
+;  (copiar la fuente de la ROM ANTES de remapear los bloques 0-2, si no
+;  $1E00 deja de ser la ROM real y la copia sale en blanco).
+; =====================================================================
+
+;            public ?init,?ldccp,?rlccp
+;            extrn  ?pmsg
+
+DFILE_OVR      equ 2096
+DFILE_OVR_EN   equ 2098
+DFILE_val      equ 0EA00h
+ATTR_OVR       equ 2059
+ATTR_OVR_EN    equ 2061
+ATTR_val       equ 0E200h
+FONT_I         equ 0F8h
+FONT_ADDR      equ 0F800h
+CHARSET_SRC    equ 01E00h
+
+ROWS           equ 24
+COLS           equ 80
+
+DataPort       equ 0A7h
+ClkPort        equ 0AFh
+CMD_chars256   equ 041h        ; SEL_256CHARS = 65
+CMD_fullpaging equ 01Dh        ; 29
+
+;            extrn  dup_switcher
+
+?init:      di
+            xor  a
+            out  (0FDh), a       ; NMI off
+
+            ; --- vectores de redireccion de E/S (SCB.ASM): sin esto
+            ; quedan a 0/basura y conout/conin (BIOSKRNL.ASM, out$scan/
+            ; in$scan) escanean sus 16 bits llamando a ?ci/?co una vez
+            ; por cada bit a 1 -- con @ctbl teniendo un unico dispositivo
+            ; (bit15, el primero que prueba el escaneo), hace falta
+            ; $8000 exacto para seleccionar SOLO el dispositivo 0. Sin
+            ; inicializar esto se ve cada caracter repetido/arrastrado
+            ; (una llamada a ?co por cada bit a 1 que haya quedado).
+            ld   hl, 08000h
+            ld   (@CIVEC), hl
+            ld   (@COVEC), hl
+            ld   (@AIVEC), hl
+            ld   (@AOVEC), hl
+            ld   (@LOVEC), hl
+            ld   a, FONT_I
+            ld   i, a
+
+            ; fuente: copia de ROM x4 (ANTES de remapear bloques 0-2 --
+            ; ver la nota de cabecera)
+            ld   de, FONT_ADDR
+            ld   b, 4
+in_copy_font:
+            push bc
+            ld   hl, CHARSET_SRC
+            ld   bc, 512
+            ldir
+            pop  bc
+            djnz in_copy_font
+
+            ; secuencia de video real de boot_cpm.asm (ya validada en hardware)
+            ld   a, (8 << 3)  | 0
+            out  (0E7h), a
+            ld   a, (9 << 3)  | 1
+            out  (0E7h), a
+            ld   a, (10 << 3) | 2
+            out  (0E7h), a
+
+            ld   hl, DFILE_val
+            ld   (DFILE_OVR), hl
+            ld   a, 170
+            ld   (DFILE_OVR_EN), a
+
+            ld   hl, ATTR_val
+            ld   (ATTR_OVR), hl
+            ld   a, 170
+            ld   (ATTR_OVR_EN), a
+
+            ld   a, 174
+            ld   (2045), a
+
+            xor  a
+            ld   (2094), a
+            ld   (2095), a
+
+            ld   (2056), a      ; desproteger bloque 0 + cerrar ventana MMIO
+
+            ld   a, CMD_chars256
+            call in_mcu_send
+
+            call in_clear_screen
+            call in_clear_attrs
+
+            ; --- activar FULL_PAGING antes de tocar ?bank/map1blk ---
+            ld   a, CMD_fullpaging
+            call in_mcu_send
+
+            ; --- duplicar el switcher (bank.z80) en la pagina de usuario ---
+            call dup_switcher
+
+            ; --- senal de vida: mensaje en pantalla ---
+            ld   hl, signon_msg
+            call ?pmsg
+
+            ret                  ; BIOSKRNL sigue con el bucle de INIT de disco
+                                 ; (interrupciones deshabilitadas todo el
+                                 ; rato, igual que boot_cpm.asm/banktest.asm)
+
+; ---------------------------------------------------------------------
+; ldccp_real - cuerpo real del STUB (todavia no hay CCP3.ASM ensamblado:
+; imprime un mensaje y se queda parado, nunca vuelve). Llamado desde
+; ?ldccp/?rlccp en bank.z80 (zona duplicada) -- boot$1 en BIOSKRNL.ASM
+; hace "call ?ldccp" DIRECTAMENTE, sin pasar por la tabla de saltos, y
+; en ese punto ya esta seleccionado "usuario" (set$jumps corre justo
+; antes, es el diseno correcto de DRI: la CCP se carga en el TPA del
+; usuario) -- por eso ?ldccp/?rlccp tienen que vivir duplicados igual
+; que el resto de la tabla, no aqui. Sustituir por la carga real de la
+; CCP en cuanto CCP3.ASM este listo (ahi si hara falta volver a
+; "sistema" para el acceso a disco, con bnksel, antes de copiar a TPA).
+; ---------------------------------------------------------------------
+ldccp_real: ld   hl, noccp_msg
+            call ?pmsg
+in_hang:    jp   in_hang
+
+; ---------------------------------------------------------------------
+; in_mcu_send - protocolo MCU de bajo nivel (igual que en banktest.asm)
+; ---------------------------------------------------------------------
+in_mcu_send:
+            ld   b,a
+            in   a,(ClkPort)
+            ld   c,a
+            ld   a,b
+            out  (DataPort),a
+            ld   a,c
+            cpl
+            ld   c,a
+ims_wait:   in   a,(ClkPort)
+            xor  c
+            jp   m, ims_wait
+            ret
+
+; ---------------------------------------------------------------------
+; in_clear_screen / in_clear_attrs - pantalla a espacios, atributos a
+; tinta blanca/papel negro (nibble alto=papel, nibble bajo=tinta, ver
+; DOC/superfast_wide_text_modes.md #5 -- NO el formato 3+3 estilo
+; Spectrum).
+; ---------------------------------------------------------------------
+in_clear_screen:
+            ld   hl, DFILE_val+1
+            ld   b, ROWS
+ics_row:    push bc
+            ld   c, COLS
+            xor  a
+ics_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ics_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ics_row
+            ret
+
+in_clear_attrs:
+            ld   hl, ATTR_val+1
+            ld   b, ROWS
+ica_row:    push bc
+            ld   c, COLS
+            ld   a, 0Fh
+ica_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ica_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ica_row
+            ret
+
+; Mensajes en codigos ZX81 (ver chario.z80 -- la fuente cargada es la
+; ROM del ZX81 en su orden nativo, no ASCII). Terminados en 0 (real
+; convencion de ?pmsg -- NO el $FF que usa nuestro propio print_msg de
+; banktest.asm) y SOLO letras (38-63): los digitos ZX81 (28-37) caen
+; por debajo de $20 y ?co (el emulador ADM-3A completo, a diferencia
+; del print_msg directo de banktest.asm) los trata como codigos de
+; control y los ignora -- nada de digitos ni espacio (tambien <$20) en
+; estos mensajes.
+signon_msg: defb 46,51,46,57,0        ; "INIT"
+noccp_msg:  defb 51,52,40,40,53,0     ; "NOCCP"

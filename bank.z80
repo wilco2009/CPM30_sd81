@@ -1,0 +1,254 @@
+; =====================================================================
+;  bank.z80 - Todo lo que necesita vivir duplicado al final del banco 3
+;  ($7E00-$7FFF, en la pagina 3 -sistema- y la 11 -usuario-, mismo
+;  offset): ?bank, map1blk, y la tabla de saltos del BIOS (?boot/?wboot/
+;  ?const/.../?xmov -- movida aqui desde BIOSKRNL.ASM).
+;
+;  Dos razones distintas para necesitar la duplicacion, no una:
+;   1) ?bank es el UNICO codigo cuyo propio "ret" se ejecuta justo
+;      DESPUES de haber cambiado el banco 3 bajo sus pies -- asi lo usa
+;      BIOSKRNL.ASM (bnksel: sta @cbnk / jmp ?bank, un salto de cola: el
+;      "ret" final de ?bank vuelve directamente al programa de usuario
+;      cuando el contexto activo ya es "usuario").
+;   2) La tabla de saltos del BIOS la llaman DIRECTAMENTE programas de
+;      usuario reales (WordStar, Turbo Pascal...), sin pasar por BDOS,
+;      para ganar velocidad en consola -- y esas llamadas ocurren con
+;      "usuario" ya activo. Cada entrada hace "seleccionar sistema,
+;      saltar a la rutina real" (la rutina real se queda en
+;      BIOSKRNL.ASM, sin duplicar, porque una vez seleccionado sistema
+;      ya no hace falta).
+;
+;  ?xmove/?move/sd_read/write/ram_read/write NO necesitan nada de esto:
+;  solo se invocan DESDE BDOS (que ya esta en "sistema" cuando llama) y
+;  siempre restauran el contexto original antes de su propio "ret", asi
+;  que viven en zona normal (move.z80/diskio.z80), no aqui.
+;
+;  map1blk va aqui tambien porque es la MISMA primitiva de bajo nivel
+;  (un OUT (C),A) que ?bank, y conviene que este siempre alcanzable sin
+;  depender de que contexto este activo.
+;
+;  Ver memory_map.md para el mapa de paginas fisicas completo.
+; =====================================================================
+
+;            public ?bank,map1blk,dup_switcher
+            include "memmap.inc"
+
+; ---------------------------------------------------------------------
+;  Tabla de saltos del BIOS -- movida aqui desde BIOSKRNL.ASM (ver la
+;  nota en ese fichero). Duplicada al final del banco 3 junto con
+;  ?bank/map1blk porque programas de usuario reales llaman a estas
+;  entradas DIRECTAMENTE (sin pasar por BDOS) con "usuario" activo.
+;  Cada entrada hace "seleccionar sistema, saltar a la rutina real" --
+;  con "call bnksel" (no "call ?bank" a secas): bnksel actualiza @cbnk
+;  ademas de reprogramar el hardware, y hace falta que @cbnk quede
+;  sincronizado o ?move se desincroniza mas adelante (ver move.z80,
+;  mv$done). ?boot es la unica excepcion -- se ejecuta una sola vez, al
+;  arrancar, antes de que FULL_PAGING este activo; forzar un cambio de
+;  contexto ahi seria prematuro. El cuerpo real va mas abajo, DESPUES
+;  de "org SWITCHER_BASE" -- tiene que quedar duplicado tambien.
+; ---------------------------------------------------------------------
+;            public ?boot,?wboot,?const,?conin,?cono,?list,?auxo,?auxi
+;            public ?home,?sldsk,?sttrk,?stsec,?stdma,?read,?write
+;            public ?lists,?sctrn
+;            public ?conos,?auxis,?auxos,?dvtbl,?devin,?drtbl
+;            public ?mltio,?flush,?mov,?tim,?bnksl,?stbnk,?xmov
+;            extrn  bnksel
+;            extrn  boot,wboot,const,conin,conout,list,auxout,auxin
+;            extrn  home,seldsk,settrk,setsec,setdma,read,write
+;            extrn  listst,sectrn
+;            extrn  conost,auxist,auxost,devtbl,getdrv
+;            extrn  multio,flush,setbnk
+;            extrn  ?cinit,?move,?xmove,?time
+
+DUPWIN      equ 5              ; banco usado como ventana para duplicar
+                                ; este modulo en el arranque
+
+SWITCHER_BASE equ 07E00h       ; banco 3, ultimos 512 B ($7E00-$7FFF)
+SWITCHER_LEN  equ 0200h
+BANK3_ADDR    equ 06000h
+SWITCHER_OFF  equ SWITCHER_BASE-BANK3_ADDR
+DUPWIN_ADDR   equ 0A000h
+
+; ---------------------------------------------------------------------
+; dup_switcher - copia este modulo (ya cargado en la pagina de sistema,
+; la 3) a la pagina de usuario (11), mismo offset dentro de la pagina.
+; Llamar UNA vez en el arranque, antes de que nada intente ejecutar
+; ?bank estando en contexto usuario. No necesita vivir en la zona
+; duplicada: solo se llama una vez, con "sistema" siempre activo.
+; ---------------------------------------------------------------------
+dup_switcher:
+            ld   a, BANK1_BASE+3
+            ld   e, DUPWIN
+            call map1blk
+            ld   hl, SWITCHER_BASE
+            ld   de, DUPWIN_ADDR+SWITCHER_OFF
+            ld   bc, SWITCHER_LEN
+            ldir
+            ld   a, BANK0_BASE+DUPWIN
+            ld   e, DUPWIN
+            call map1blk
+            ret
+
+; =======================================================================
+;  Zona duplicada -- banco 3, $7E00-$7FFF. Todo lo de aqui abajo se
+;  copia tambien a la pagina de usuario por dup_switcher, arriba.
+; =======================================================================
+
+            org  SWITCHER_BASE
+
+; ---------------------------------------------------------------------
+; map1blk - mapea la pagina A en el banco E (0-7). No toca @cbnk ni el
+; resto de bancos.
+; ---------------------------------------------------------------------
+map1blk:    push bc
+            ld   b,a
+            ld   c,0E7h
+            ld   a,e
+            out  (c),a
+            pop  bc
+            ret
+
+; ---------------------------------------------------------------------
+; ?bank - selecciona contexto de ejecucion. A = 0 (sistema) o 1
+; (usuario). Reprograma los bancos 0-6 (el 7, comun, no se toca).
+; Llamado por BIOSKRNL.ASM via bnksel (salto de cola, no CALL) -- el
+; "ret" de aqui es lo que devuelve el control al programa de usuario
+; cuando A=1, ya con el banco 3 mostrando la pagina de usuario.
+; ---------------------------------------------------------------------
+?bank:      push af
+            push bc
+            push de
+            or   a
+            jr   nz, bank_is1
+            ld   d,BANK0_BASE
+            jr   bank_go
+bank_is1:   ld   d,BANK1_BASE
+bank_go:    ld   e,7
+            ld   c,0
+bank_loop:  ld   a,d
+            add  a,c
+            ld   b,a
+            push bc
+            ld   a,c
+            ld   c,0E7h
+            out  (c),a
+            pop  bc
+            inc  c
+            dec  e
+            jr   nz, bank_loop
+            pop  de
+            pop  bc
+            pop  af
+            ret
+
+; ---------------------------------------------------------------------
+;  Tabla de saltos del BIOS (duplicada -- ver la nota mas arriba, junto
+;  a los "extrn"). ?boot es la unica sin cambio de contexto.
+; ---------------------------------------------------------------------
+?boot:      jmp  boot            ; unica excepcion, ver nota arriba
+
+?wboot:     xor  a
+            call bnksel
+            jmp  wboot
+?const:     xor  a
+            call bnksel
+            jmp  const
+?conin:     xor  a
+            call bnksel
+            jmp  conin
+?cono:      xor  a
+            call bnksel
+            jmp  conout
+?list:      xor  a
+            call bnksel
+            jmp  list
+?auxo:      xor  a
+            call bnksel
+            jmp  auxout
+?auxi:      xor  a
+            call bnksel
+            jmp  auxin
+
+?home:      xor  a
+            call bnksel
+            jmp  home
+?sldsk:     xor  a
+            call bnksel
+            jmp  seldsk
+?sttrk:     xor  a
+            call bnksel
+            jmp  settrk
+?stsec:     xor  a
+            call bnksel
+            jmp  setsec
+?stdma:     xor  a
+            call bnksel
+            jmp  setdma
+?read:      xor  a
+            call bnksel
+            jmp  read
+?write:     xor  a
+            call bnksel
+            jmp  write
+
+?lists:     xor  a
+            call bnksel
+            jmp  listst
+?sctrn:     xor  a
+            call bnksel
+            jmp  sectrn
+
+?conos:     xor  a
+            call bnksel
+            jmp  conost
+?auxis:     xor  a
+            call bnksel
+            jmp  auxist
+?auxos:     xor  a
+            call bnksel
+            jmp  auxost
+?dvtbl:     xor  a
+            call bnksel
+            jmp  devtbl
+?devin:     xor  a
+            call bnksel
+            jmp  ?cinit
+
+?drtbl:     xor  a
+            call bnksel
+            jmp  getdrv
+?mltio:     xor  a
+            call bnksel
+            jmp  multio
+?flush:     xor  a
+            call bnksel
+            jmp  flush
+
+?mov:       xor  a
+            call bnksel
+            jmp  ?move
+?tim:       xor  a
+            call bnksel
+            jmp  ?time
+?bnksl:     jmp  bnksel          ; el propio bnksel YA hace el cambio
+?stbnk:     xor  a
+            call bnksel
+            jmp  setbnk
+?xmov:      xor  a
+            call bnksel
+            jmp  ?xmove
+
+; ?ldccp/?rlccp: BIOSKRNL.ASM (boot$1/wboot) los llama DIRECTAMENTE, sin
+; pasar por la tabla de arriba -- pero justo antes se ejecuta set$jumps,
+; que YA selecciono "usuario" (correcto: la CCP se carga en su TPA). Nuestro
+; stub (todavia sin CCP real) no necesita seguir en usuario, asi que
+; vuelve a sistema antes de saltar al cuerpo real (init.z80, ldccp_real)
+; -- igual patron que el resto de la tabla. Cuando haya CCP real, esto
+; puede necesitar revisarse (el cuerpo real gestionara sus propios
+; cambios de contexto segun haga falta).
+?ldccp:     xor  a
+            call bnksel
+            jmp  ldccp_real
+?rlccp:     xor  a
+            call bnksel
+            jmp  ldccp_real

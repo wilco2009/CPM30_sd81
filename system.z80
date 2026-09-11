@@ -1,0 +1,66 @@
+; =====================================================================
+;  system.z80 - primer ensamblado conjunto de CP/M+ SD81: BIOSKRNL.ASM
+;  (nucleo de DRI) + todo nuestro XIOS. SIN CCP/BDOS todavia (no estan
+;  ensamblados) -- objetivo de esta primera prueba: llegar a ?boot ->
+;  boot: -> ?init (video+FULL_PAGING+duplicar switcher) -> bucles de
+;  ?cinit/INIT de disco (no-op) -> ?ldccp (stub: mensaje + parado).
+;
+;  Terreno nuevo: hasta ahora BIOSKRNL.ASM solo se probo ensamblado en
+;  aislado (--rel, ver build_bioskrnl.bat). Esta es la primera vez que
+;  se combina con el resto -- puede que salga algun error de
+;  compatibilidad nuevo (cseg/dseg/public/extrn en un ensamblado
+;  absoluto de un solo fichero, no relocatable).
+;
+;  Ensamblar: zmac --od . --oo cim,lst system.z80
+;  Cargar (desde BASIC):
+;    LOAD THEN CLEAR 24575
+;    LOAD FAST "SYSTEM.BIN" CODE 24576
+;    RAND USR 24576
+; =====================================================================
+
+            org  06000h
+
+; -----------------------------------------------------------------------
+;  start - activa MC45 ANTES de saltar a ?boot. Sin esto la CPU no puede
+;  ejecutar codigo en la mitad alta del mapa (A15=1, >=$8000) -- que es
+;  donde cae casi todo nuestro XIOS (init.z80, chario.z80...) una vez
+;  ensamblado detras de BIOSKRNL.ASM/SCB.ASM. Confirmado en hardware
+;  real: sin activar MC45 se leian NOP en vez de las instrucciones
+;  reales por encima de $8000 (bytes correctos en el .bin, ver
+;  memory_map.md).
+;
+;  boot_mcu_send es una copia MINIMA e independiente de in_mcu_send
+;  (init.z80): esa vive por encima de $8000 y no se puede llamar
+;  todavia -- justo el problema que este bloque resuelve.
+; -----------------------------------------------------------------------
+start:      ld   a,013h          ; comando MCU: MC45 ON (48K mode)
+            call boot_mcu_send
+            jp   ?boot           ; BASIC "RAND USR 24576" entra aqui
+
+boot_mcu_send:
+            ld   b,a
+            in   a,(0AFh)
+            ld   c,a
+            ld   a,b
+            out  (0A7h),a
+            ld   a,c
+            cpl
+            ld   c,a
+bms_wait:   in   a,(0AFh)
+            xor  c
+            jp   m, bms_wait
+            ret
+
+            .8080                ; BIOSKRNL.ASM/SCB.ASM son fuente DRI (8080)
+            include "BIOSKRNL.ASM"
+            include "SCB.ASM"
+            .z80                 ; el resto de ficheros son Z80 puro (jr/djnz/...)
+
+            include "bank.z80"
+            include "move.z80"
+            include "diskio.z80"
+            include "drvtbl.z80"
+            include "chario.z80"
+            include "init.z80"
+
+            end

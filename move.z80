@@ -1,0 +1,96 @@
+; =====================================================================
+;  move.z80 - ?xmove/?move (copia entre contextos) + @bnkbf. Zona normal
+;  del banco 3 (sistema), NO duplicada -- solo los invoca BDOS, que ya
+;  esta en "sistema" al llamar, y ?move siempre restaura el contexto
+;  original antes de su propio "ret" (ver mv$done), asi que nunca hay
+;  un "ret" ejecutandose con el banco 3 cambiado bajo sus pies como le
+;  pasa a ?bank (ver bank.z80).
+;
+;  Contrato derivado de BDOS30.ASM (lineas 5551-5568, las dos llamadas
+;  a deblock12->xmovef antes de una lectura/escritura de disco):
+;    ?xmove: B = contexto destino, C = contexto origen. Solo memoriza.
+;    ?move:  DE = direccion origen (contexto origen memorizado),
+;            HL = direccion destino (contexto destino memorizado),
+;            BC = numero de bytes. Copia en trozos de hasta 128 B via
+;            @bnkbf (banco comun, siempre alcanzable pase lo que pase).
+; =====================================================================
+
+;            public ?move,?xmove,?time
+;            extrn  @cbnk,?bank,@bnkbf   ; @bnkbf ahora lo define SCB.ASM
+
+; ?time - pendiente: sin RTC real integrado todavia (el firmware del
+; MCU tiene RTC.cpp, pero aun no esta conectado aqui). Por ahora no-op.
+?time:      ret
+
+xmv$dbnk:   ds   1
+xmv$sbnk:   ds   1
+mv$de:      ds   2              ; puntero origen, avanza entre trozos
+mv$hl:      ds   2              ; puntero destino, avanza entre trozos
+mv$cnt:     ds   2              ; bytes restantes
+mv$len:     ds   1              ; longitud del trozo actual (1-128)
+
+?xmove:     ld   a,b
+            ld   (xmv$dbnk),a
+            ld   a,c
+            ld   (xmv$sbnk),a
+            ret
+
+?move:      ld   (mv$de),de
+            ld   (mv$hl),hl
+            ld   (mv$cnt),bc
+
+mv$loop:    ld   de,(mv$cnt)
+            ld   a,d
+            or   e
+            jr   z, mv$done      ; restante=0 -> terminado
+
+            ; trozo = min(restante,128) -> A
+            ld   a,d
+            or   a
+            jr   nz, mv$t128     ; D<>0 -> restante>=256 -> trozo=128
+            ld   a,e
+            cp   129
+            jr   nc, mv$t128     ; E>=129 -> trozo=128
+            ld   a,e             ; restante<=128 -> trozo=restante
+            jr   mv$gotlen
+mv$t128:    ld   a,128
+mv$gotlen:  ld   (mv$len),a
+
+            ; --- fase 1: contexto origen -> @bnkbf ---
+            ld   de,(mv$de)
+            ld   hl,@bnkbf
+            ld   a,(xmv$sbnk)
+            call ?bank
+            ld   a,(mv$len)
+            ld   c,a
+            ld   b,0
+            ldir                 ; (DE)->(@bnkbf); avanza DE y HL
+            ld   (mv$de),de
+
+            ; --- fase 2: @bnkbf -> contexto destino ---
+            ld   hl,@bnkbf       ; HL=origen del LDIR (@bnkbf)
+            ld   de,(mv$hl)      ; DE=destino del LDIR (destino real)
+            ld   a,(xmv$dbnk)
+            call ?bank
+            ld   a,(mv$len)
+            ld   c,a
+            ld   b,0
+            ldir                 ; (HL)=@bnkbf -> (DE)=destino real; avanza DE
+            ld   (mv$hl),de      ; guarda el puntero destino avanzado
+
+            ; --- restante -= trozo ---
+            ld   hl,(mv$cnt)
+            ld   a,(mv$len)
+            ld   e,a
+            ld   d,0
+            or   a
+            sbc  hl,de
+            ld   (mv$cnt),hl
+            jr   mv$loop
+
+mv$done:    ld   a,(@cbnk)       ; deja el hardware como estaba al entrar
+            call ?bank
+            ld   de,(mv$de)
+            ld   hl,(mv$hl)
+            ld   bc,0
+            ret

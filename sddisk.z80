@@ -1,0 +1,161 @@
+; =====================================================================
+;  sddisk.z80  -  Acceso a disco CP/M via SD81Booster (comandos 0x35-0x39)
+;  Handshake: comm_clk (bit7 de ClkPort=AFh) togglea una vez por byte.
+;    C = clock de referencia (bit7). mcu_send/mcu_recv lo invierten en cada
+;    toggle. Datos en DE/HL (C reservado para el clock).
+;  Protocolo (derivado de SD81Booster.cpp):
+;    fopen (35): cmd + len + nombre(ASCII)        -> handle (0xFF error)
+;    fseek (36): cmd + handle + offset 4B LE       -> status
+;    fread (37): cmd + handle + count 2B LE        -> count bytes + status
+;    fwrite(38): cmd + handle + count 2B LE + datos-> status
+;    fclose(39): cmd + handle                       -> status
+; =====================================================================
+
+DataPort    equ 0A7h
+ClkPort     equ 0AFh
+
+; ---------------------------------------------------------------------
+;  Primitivas de handshake
+; ---------------------------------------------------------------------
+sd_clk:     in   a,(ClkPort)        ; C = clock actual (bit7)
+            ld   c,a
+            ret
+
+mcu_send:                           ; envia A; espera toggle; preserva DE,HL,B
+            out  (DataPort),a
+            ld   a,c
+            cpl
+            ld   c,a                ; C = clock esperado tras el toggle
+ms_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,ms_w             ; espera bit7(ClkPort)==bit7(C)
+            ret
+
+mcu_recv:                           ; lee byte en A; espera toggle; preserva DE,HL,B
+            in   a,(DataPort)
+            push af
+            ld   a,c
+            cpl
+            ld   c,a
+mr_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,mr_w
+            pop  af
+            ret
+
+; ---------------------------------------------------------------------
+;  sd_fopen  -  HL = nombre (ASCII, terminado en 0). Devuelve A = handle.
+; ---------------------------------------------------------------------
+sd_fopen:   call sd_clk
+            ld   a,035h
+            call mcu_send           ; cmd fopen
+            ; longitud del nombre -> B
+            push hl
+            ld   b,0
+so_len:     ld   a,(hl)
+            or   a
+            jr   z,so_lend
+            inc  b
+            inc  hl
+            jr   so_len
+so_lend:    pop  hl
+            ld   a,b
+            call mcu_send           ; longitud
+so_loop:    ld   a,(hl)
+            or   a
+            jr   z,so_end
+            call mcu_send           ; cada caracter
+            inc  hl
+            jr   so_loop
+so_end:     call mcu_recv           ; handle
+            ret
+
+; ---------------------------------------------------------------------
+;  sd_fseek  -  A = handle ; offset 32-bit LE en (sd_off). Devuelve A=status.
+; ---------------------------------------------------------------------
+sd_fseek:   ld   (sd_handle),a
+            call sd_clk
+            ld   a,036h
+            call mcu_send
+            ld   a,(sd_handle)
+            call mcu_send           ; handle
+            ld   hl,sd_off
+            ld   b,4
+sk_loop:    ld   a,(hl)
+            call mcu_send           ; offset byte (LE)
+            inc  hl
+            djnz sk_loop
+            call mcu_recv           ; status
+            ret
+
+; ---------------------------------------------------------------------
+;  sd_fread  -  (sd_handle)=handle, DE=count, HL=dest. Devuelve A=status.
+; ---------------------------------------------------------------------
+sd_fread:   call sd_clk
+            ld   a,037h
+            call mcu_send
+            ld   a,(sd_handle)
+            call mcu_send
+            ld   a,e
+            call mcu_send           ; count lo
+            ld   a,d
+            call mcu_send           ; count hi
+fr_loop:    call mcu_recv
+            ld   (hl),a
+            inc  hl
+            dec  de
+            ld   a,d
+            or   e
+            jr   nz,fr_loop
+            call mcu_recv           ; status
+            ret
+
+; ---------------------------------------------------------------------
+;  sd_fwrite  -  (sd_handle)=handle, DE=count, HL=src. Devuelve A=status.
+; ---------------------------------------------------------------------
+sd_fwrite:  call sd_clk
+            ld   a,038h
+            call mcu_send
+            ld   a,(sd_handle)
+            call mcu_send
+            ld   a,e
+            call mcu_send
+            ld   a,d
+            call mcu_send
+fw_loop:    ld   a,(hl)
+            call mcu_send
+            inc  hl
+            dec  de
+            ld   a,d
+            or   e
+            jr   nz,fw_loop
+            call mcu_recv           ; status
+            ret
+
+; ---------------------------------------------------------------------
+;  sd_fclose  -  A = handle. Devuelve A = status.
+; ---------------------------------------------------------------------
+sd_fclose:  ld   (sd_handle),a
+            call sd_clk
+            ld   a,039h
+            call mcu_send
+            ld   a,(sd_handle)
+            call mcu_send
+            call mcu_recv
+            ret
+
+; ---------------------------------------------------------------------
+;  sd_sel_256chars  -  activa el modo de 256 caracteres definibles (MCU
+;  cmd 65, comando "simple": solo cmd, sin parametros ni respuesta).
+; ---------------------------------------------------------------------
+sd_sel_256chars:
+            call sd_clk
+            ld   a,065
+            call mcu_send
+            ret
+
+; NOTA (CPM3_SD81): a diferencia del 2.2, aqui NO se incluyen
+; compute_offset ni diskname_a-d/fontname -- compute_offset vive en
+; diskio.z80 (usa @trk/@sect de BIOSKRNL, no trk/sec propios del 2.2) y
+; diskname_a-d tambien vive alli junto al resto del driver de disco;
+; fontname se anadira donde corresponda al escribir el arranque.

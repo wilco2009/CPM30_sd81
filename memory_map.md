@@ -98,21 +98,33 @@ páginas del disco RAM son físicamente páginas *fuera* de los 8 bancos
 direccionables del contexto usuario, así que activar/desactivar el disco
 RAM nunca cambia el tamaño del TPA.
 
-## El "switcher" — duplicado al final del banco 3, no en el banco común
+## El "switcher" — dos requisitos distintos, no confundir
 
-`?bank`/`?xmove`/`?move`/el driver del disco RAM son código que se
-**ejecuta**, así que no pueden vivir en el banco 7 (común) sin MC45 — ver
-arriba. Vive en las direcciones `$7E00`–`$7FFF` (últimos 512 B del banco 3,
-`$6000-$7FFF`, seguro sin MC45 por estar en `A15=0`), **duplicado byte a
-byte** en la página 3 (sistema) y la página 11 (usuario) — es decir, en
-cualquiera de las dos páginas que pueda acabar mapeada en el banco 3, hay
-una copia idéntica del switcher en esa misma dirección. Así, en el
-instante en que se decide llamarlo (`call ?bank`), da igual qué contexto
-estuviera activo justo antes — el banco 3 siempre tiene el switcher ahí.
-Y como el propio switcher reprograma su banco 3 *sobre sí mismo* como
-último paso del bucle, la ejecución sigue sin saltos: el `PC` no cambia,
-solo cambia lo que hay detrás de esa dirección — y como el byte que hay
-ahí es idéntico en ambas páginas, no importa.
+Todo el código de bajo nivel (`?bank`, `map1blk`, `?xmove`, `?move`, el
+driver del disco RAM) comparte el requisito de **no vivir en el banco 7
+sin MC45** (es código que se ejecuta, y el banco 7 no soporta eso — ver
+arriba). Pero solo **`?bank` (y `map1blk`, la misma primitiva de un solo
+`OUT`)** tienen además un segundo requisito, más estricto: **vivir
+duplicados**, byte a byte, en la página 3 (sistema) y la página 11
+(usuario) del banco 3, mismo offset. `?xmove`/`?move`/el driver del
+disco RAM **no** lo necesitan — solo los invoca BDOS (que ya está en
+"sistema" al llamar) y siempre restauran el contexto original antes de
+su propio `ret`, así que les basta con vivir en zona normal del banco 3
+(no duplicada) — ver `move.z80`/`diskio.z80`.
+
+La razón de que `?bank` sí lo necesite: es el único código cuyo propio
+`ret` se ejecuta **después** de haber cambiado el banco 3 bajo sus pies
+— así es exactamente como lo usa `BIOSKRNL.ASM` (`bnksel: sta @cbnk / jmp
+?bank`, un salto de cola: el `ret` final de `?bank` es lo que devuelve el
+control al programa de usuario, con el contexto ya en "usuario"). Vive en
+`$7E00`–`$7FFF` (últimos 512 B del banco 3, `$6000-$7FFF`, seguro sin
+MC45 por estar en `A15=0`), duplicado en la página 3 y la 11 — así, en el
+instante en que se decide llamarlo, da igual qué contexto estuviera
+activo justo antes. Y como el propio `?bank` reprograma su banco 3 *sobre
+sí mismo* como último paso del bucle, la ejecución sigue sin saltos: el
+`PC` no cambia, solo cambia lo que hay detrás de esa dirección — y como
+el byte que hay ahí es idéntico en ambas páginas, no importa. Ver
+`bank.z80` para el fichero real (con `dup_switcher`, la copia de arranque).
 
 **El offset dentro de la página importa.** El switcher está en el
 banco 3 en el offset `$7E00-$6000 = $1E00` de la página. Duplicarlo con
@@ -124,8 +136,10 @@ apunte a la página de usuario.
 ## Disco RAM — resto, 50 páginas / 400 KB
 
 Montable/desmontable como unidad normal de CP/M (p.ej. `E:`). Acceso vía
-"ventana temporal": la rutina de I/O (código en zona común, que nunca se
-mueve) guarda la página que hay en un bloque de TPA del banco activo, la
+"ventana temporal": la rutina de I/O (`ram_read`/`ram_write` en
+`diskio.z80` — zona normal del banco 3, no duplicada, porque solo la
+invoca BDOS) guarda la página que hay en un banco de TPA del contexto
+activo, la
 reemplaza por la página del disco RAM que toca, copia los datos, y
 restaura la página original antes de devolver el control al programa de
 usuario — transparente porque ocurre dentro de una llamada a BDOS, nunca
@@ -679,12 +693,137 @@ contrato `READ`/`WRITE`/`LOGIN`/`INIT` de la tabla 4-11 del *System
 Guide*: entran con `DE`=puntero al XDPH, parámetros en `@adrv`/`@rdrv`/
 `@trk`/`@sect`/`@dma`/`@dbnk`, devuelven código de error en `A`).
 
-`csv_a`-`csv_d`/`alv_a`-`alv_e` (vectores de checksum/asignación, uno por
-unidad — CP/M 3 ya no permite compartirlos entre unidades como hacía el
-2.2 con un único buffer `vtdir`, porque cada uno lleva su propio estado)
-y la zona común (vars/pantalla/fuente/`@bnkbf`) quedan pendientes de
-tamaño exacto una vez se sepa cuánto ocupa todo esto en el banco 7.
+**Escrito**: `diskio.z80` (`sd_read`/`sd_write`/`sd_login`/`sd_init` +
+`ram_read`/`ram_write`/`ram_login`/`ram_init`, contrato de la tabla 4-11
+completo, más `csv_a`-`csv_d`/`alv_a`-`alv_e`) y `sddisk.z80` (protocolo
+MCU, copiado del 2.2 sin cambios salvo quitar `compute_offset`/
+`diskname_a-d`, que ahora viven en `diskio.z80` usando `@trk`/`@sect` de
+`BIOSKRNL` en vez de las variables propias del 2.2). Novedad respecto al
+2.2: tanto `sd_read`/`sd_write` como `ram_read`/`ram_write` pasan siempre
+por `@bnkbf` (128 B, coincide con el tamaño de sector) para llegar a
+`(@dma)` en el banco `@dbnk` — necesario porque el llamador puede estar
+en un banco distinto al que ve el driver; escribir directamente en
+`(@dma)` sin este paso fallaría en cuanto `@dbnk <> @cbnk`.
 
-Pendiente: escribir `sd_read`/`sd_write`/`sd_login`/`sd_init` adaptando
-`sddisk.z80`, y `ram_read`/`ram_write`/`ram_login`/`ram_init` a partir de
-`ramdisk_read`/`ramdisk_write` (ya escritos más arriba).
+`csv_a`-`csv_d` (16 B cada uno, `(DRM/4)+1`) y `alv_a`-`alv_e` (63 B
+para A-D, 14 B para `E:`, `(DSM/4)+2` — **doble bit por bloque,
+obligatorio en CP/M 3 banked**, a diferencia del único bit que usaba el
+2.2 en `alv0`-`alv3`, 31 B, que no sirven tal cual aquí). `E:` no lleva
+`CSV` — medio fijo (`CKS=8000h` en `dpb_ram`), nos ahorramos ese buffer.
+
+También materializado el módulo del "switcher" como ficheros reales:
+`bank.z80` (`?bank`/`map1blk`, duplicados) y `move.z80` (`?xmove`/
+`?move`/`@bnkbf`, zona normal) — ver la sección de más arriba.
+
+**Escrito**: `drvtbl.z80` (`@dtbl` + los 5 XDPH + `dpb_sd`/`dpb_ram`,
+verificado a mano el conteo de bytes de cada XDPH contra los offsets del
+*System Guide*) y `chario.z80` (`?ci`/`?co`/`?cist`/`?cost`/`?cinit` +
+`@ctbl`, terminal ADM-3A + teclado ZX81 + cursor parpadeante, copiado del
+2.2 sin cambios de lógica — solo renombrar `_const`/`_conin`/`_conout` a
+`?cist`/`?ci`/`?co` y añadir `?cost`/`?cinit`, triviales al no haber
+dispositivo serie real. `@ctbl` usa por fin `modebaud.lib` para algo real,
+no solo la referencia de paso de `?devin`).
+
+## `BIOSKRNL.ASM` asume "común = memoria alta = siempre ejecutable" — no vale aquí
+
+Hallazgo real durante la integración: `BIOSKRNL.ASM` empieza con
+`cseg ; GENCPM puts CSEG stuff in common memory` — DRI da por hecho que
+**toda** la tabla de saltos del BIOS (`?boot`/`?wboot`/`?const`/.../`?xmov`)
+vive en zona común, alcanzable desde cualquier banco. En hardware normal
+(común = memoria alta, siempre ejecutable) esto no es un problema; en el
+nuestro (sin MC45, banco 7 no ejecuta código) sí — y no es solo cosa de
+`?bank` esta vez: programas de usuario reales (WordStar, Turbo Pascal...)
+llaman a estas entradas **directamente**, sin pasar por BDOS, para ganar
+velocidad de consola — con "usuario" ya activo.
+
+**Solución** (confirmada con el usuario): la tabla de saltos se movió de
+`BIOSKRNL.ASM` a `bank.z80` (zona duplicada, junto a `?bank`/`map1blk`).
+Cada entrada pasa de `jmp rutina` a `xor a / call bnksel / jmp rutina` —
+`bnksel` (no `?bank` a secas) porque también actualiza `@cbnk`, necesario
+para que `?move` no se desincronice después. `?boot` es la única
+excepción: se ejecuta una sola vez al arrancar, antes de `FULL_PAGING`,
+así que forzar un cambio de contexto ahí sería prematuro. Los *cuerpos*
+reales (`boot`/`wboot`/`const`/...) se quedan intactos en `BIOSKRNL.ASM`,
+solo se les añadió `public` (antes eran internos) para que `bank.z80`
+pueda llegar a ellos con `extrn`. `?time` (pendiente de RTC real) se
+quedó como no-op en `move.z80`.
+
+**Pendiente de verificar**: si `public`/`extrn` se comportan igual en un
+ensamblado combinado (todo por `include`, absoluto) que en las pruebas
+`--rel` aisladas que hemos hecho hasta ahora — no se ha probado todavía
+un ensamblado conjunto de verdad.
+
+Pendiente: el tamaño exacto de la zona común una vez se sepa cuánto
+ocupa todo esto en el banco 7, y un fichero de arranque real que junte
+todo (`bank.z80`+`move.z80`+`diskio.z80`+`drvtbl.z80`+`chario.z80`+
+`BIOSKRNL.ASM`) para poder ensamblarlo de una pieza.
+
+**`?time` (RTC real) — pendiente, no olvidar.** Ahora mismo es un no-op
+en `move.z80`. El firmware del MCU ya tiene `RTC.cpp`
+(`SD81-Booster/Arduino/SD81BoosterV2_*_STM32`) — falta conectarlo aquí
+con el protocolo MCU (estilo `mcu_send`/`mcu_recv`, como `sddisk.z80`) y
+el contrato de `?time` del *System Guide* §4.6. También anotado en
+memoria persistente para que no se pierda entre sesiones.
+
+## MC45 obligatorio, permanentemente — decisión consciente, no provisional
+
+Confirmado en hardware real (primera prueba de arranque conjunto): CP/M+
+**requiere MC45 activo desde el primerísimo instante** (`start:` en
+`system.z80`, comando MCU `0x13`, antes incluso de `jp ?boot`) y no hay
+forma de evitarlo mientras el modelo banked exista.
+
+Motivo de fondo, no solo el vídeo: el modelo banked de CP/M 3 exige una
+zona "común" de verdad — código/datos que sobrevivan a un cambio de
+banco sin duplicarse (`boot$1`...`bnksel`+`xofflist`+`boot$stack`,
+`@cbnk`; ver más abajo). En este hardware esa zona común solo puede
+*ejecutar* código gracias a MC45 (engaña al generador de NOPs nativo del
+ZX81 para permitir fetch de instrucciones con A15=1). Sin MC45, banco 7
+sigue siendo un área de memoria fija, pero inutilizable como "común
+ejecutable" — y sin común ejecutable no hay banked BIOS que funcione.
+Se evaluó (con el usuario) la alternativa de evitar MC45 — el propio
+`SD81.v` explica por qué: fuerza `/HALT=0` mientras `/M1=0` (fetch en
+la mitad alta de memoria), lo cual estresa la señal más de lo normal —
+pero la única forma real de evitarlo sería limitar CP/M+ a 32 KB de
+espacio de direcciones útil, lo que lo dejaría prácticamente inútil (y
+para eso ya está el CP/M 2.2, que si funciona sin MC45). Decisión:
+aceptar el estrés de hardware, MC45 fijo todo el rato. Además, todo el
+código movido a banco 7 vive en la mitad `A14=1` (`$C000-$FFFF`), así
+que también hace falta `sfast_mode_en` activo (POKE 2045,174 en
+`?init`) — no supone ninguna restricción extra real porque ya usamos
+Superfast para todo el vídeo (nadie usa el salto nativo a `DFILE+$8000`
+que el generador de NOPs protegía).
+
+## Bug real encontrado y corregido: `boot$1`/`set$jumps`/`@cbnk` en banco 3 en vez de banco 7
+
+`set$jumps` (dentro del `cseg` de `BIOSKRNL.ASM`) cambia de contexto A
+MITAD de su propia ejecución (`mvi a,1 / call ?bnksl`, para dejar
+"usuario" seleccionado antes de cargar la CCP en su TPA) y luego SIGUE
+ejecutando más código (escribir los vectores de página cero). Si ese
+código — y la pila que usa, `boot$stack` — vive en banco 3 normal (no
+duplicado, a diferencia de la tabla de saltos / `?bank` / `map1blk`),
+en cuanto el banco cambia bajo sus pies la CPU pasa a buscar
+instrucciones (y a hacer `pop` del `ret`) en la página de usuario, que
+nunca tiene ese código cargado → ejecución de basura. Confirmado en
+hardware con el depurador: el `ret` de `set$jumps`, justo después del
+cambio de banco, hacía `pop` de basura y el PC se iba a `$FFFF`.
+
+Mismo problema, más sutil, en `@cbnk`: `bnksel` hace `sta @cbnk` ANTES
+de que `?bank` cambie de banco, así que escribe en la copia de la
+página que se está ABANDONANDO, no en la de destino — una lectura
+posterior desde el otro contexto leería basura/desactualizado.
+
+**Solución real** (no duplicación, sino lo que el `cseg` de DRI pedía
+desde el principio): mover `boot$1`...`bnksel`+`xofflist`+`boot$stack`
+a `$F200` (banco 7, hueco libre entre `DFILE_val` y `FONT_ADDR`) y
+`@cbnk` a `$E064` (justo detrás de las variables del SCB), con `org`
+explícitos en `BIOSKRNL.ASM` (ver comentarios ahí) y volviendo a
+`$6058` después para que `seldsk` y todo lo de detrás mantenga las
+mismas direcciones que antes. En banco 7, `?bank` nunca toca nada, así
+que el problema desaparece por construcción.
+
+**Primer hito de arranque alcanzado** (objetivo de la sesión): con esto,
+el mensaje completo `INITNOCCP` se ve en hardware real — `?boot` →
+`boot:` → `?init` (vídeo + MC45 + `FULL_PAGING` + duplicar switcher) →
+bucles `?cinit`/INIT de disco → `boot$1` → `set$jumps` (cambio a
+"usuario" limpio) → `?ldccp` (stub) → mensaje "NOCCP" + parada. Falta
+CCP3.ASM/BDOS3 reales para sustituir el stub.
