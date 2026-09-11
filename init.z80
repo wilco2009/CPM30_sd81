@@ -57,6 +57,15 @@ CMD_fullpaging equ 01Dh        ; 29
             ld   (@AIVEC), hl
             ld   (@AOVEC), hl
             ld   (@LOVEC), hl
+
+            ; @MXTPA: "top of user TPA", pero tambien la direccion real
+            ; de entrada a la BDOS -- set$jumps (BIOSKRNL.ASM) la lee
+            ; para montar el vector de la direccion 5 ("call 5") en
+            ; cada arranque/entrada a la CCP. "bdos" es la entrada real
+            ; de RESBDOS.ASM (bdos_full.z80/system.z80).
+            ld   hl, bdos
+            ld   (@MXTPA), hl
+
             ld   a, FONT_I
             ld   i, a
 

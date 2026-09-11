@@ -63,4 +63,24 @@ bms_wait:   in   a,(0AFh)
             include "chario.z80"
             include "init.z80"
 
+; -----------------------------------------------------------------------
+;  BDOS.ASM + RESBDOS.ASM (banked, real de DRI) -- van al final en orden
+;  de FUENTE a proposito, aunque su propio "org 0000h" los coloca en
+;  memoria muy por debajo de todo lo anterior ($0000-$33xx, banco 0-2 de
+;  sistema, completamente libres hasta ahora). El orden de aparicion en
+;  el fuente (no la direccion final) es lo que importa para que sus
+;  alias "equ" hacia ?boot..?xmov (bank.z80) sean referencia HACIA
+;  ATRAS -- ver memory_map.md, la nota sobre inestabilidad de fase con
+;  "equ" hacia delante (nos costo una buena sesion de depuracion).
+; -----------------------------------------------------------------------
+            .8080
+            include "BDOS.ASM"
+            include "RESBDOS.ASM"
+
+; CPM3_SD81: alias que BDOS.ASM necesita pero solo se pueden resolver
+; aqui (referencia hacia atras de verdad, con los dos ficheros ya
+; incluidos) -- ver la nota en BDOS.ASM junto a "bios equ ?boot".
+xdmaad		equ	xdmaadd
+srch$hash	equ	rb$search$hash
+
             end

@@ -943,7 +943,42 @@ externos al enlazar). Bugs encontrados y corregidos:
   `BDOS.ASM`) tuvieron que ir aún más lejos: en `bdos_full.z80`,
   después de incluir los dos ficheros.
 
-**Pendiente**: `org 0000h` sigue siendo un valor provisional — falta
-decidir la dirección real de la BDOS en nuestro mapa de páginas y
-completar la integración en `system.z80` (junto con `CCP3.ASM`, y
-resolver cómo `?ldccp` carga la CCP real desde disco).
+## BDOS integrada en `system.z80` — `org $8800`, no `$0000`
+
+Se probó primero `org 0000h` (banco 0-2, `$0000-$5FFF` libres, de sobra
+para los ~13 KB de `BDOS.ASM`+`RESBDOS.ASM`) — ensambla bien, pero
+**arranque muerto en hardware real, ni siquiera "INIT"**. Motivo: el
+procedimiento de carga (`LOAD FAST SYSTEM.BIN CODE 24576`) mete el
+`.cim` como un bloque plano único a partir de `$6000` — con `org 0000h`
+el `.cim` pasa a empezar en `$0000`, así que al cargarlo en `$6000` se
+desplaza TODO el fichero `$6000` bytes de más (`start:` deja de estar
+donde `RAND USR 24576` espera). La BDOS tiene que quedar CONTIGUA con
+el resto del XIOS, no en una zona libre cualquiera del mapa de páginas
+— nuestro método de carga no admite bloques separados.
+
+Solución: `org $8800` (justo detrás de `init.z80`, que termina en
+`$87FE`) — sigue en los bloques 4-5, sin necesitar `mc45_ext67`, y cabe
+de sobra (~13 KB, hasta ~`$BC00`).
+
+**Pendiente**: integrar `CCP3.ASM` (mismo problema de contigüidad a
+tener en cuenta) y resolver cómo `?ldccp` carga la CCP real desde
+disco.
+
+### Bug real de DRI encontrado al mover `base` de $0 a $8800
+
+`BDOS30.ASM` (línea 6231 de la fuente original, sin tocar) tiene:
+```
+last:
+	org	(((last-base)+255) and 0ff00h) - 1
+	db	0
+```
+Calcula bien un *tamaño* relativo a `base` (para redondear al siguiente
+límite de página) pero lo usa directamente como dirección **absoluta**
+de destino del `org`, sin volver a sumar `base`. Invisible mientras
+`base=$0000` (sumar 0 no cambia nada) — confirmado en hardware que
+rompía todo lo que va detrás (`RESBDOS.ASM` aterrizaba en `$2E00` en
+vez de justo detrás de `BDOS.ASM`, ~`$B600`) en cuanto `base` pasó a
+ser `$8800`. Corregido en nuestra copia (`base + (...)`). Hay una
+segunda ocurrencia idéntica en la fuente original (línea 6240, con
+`-192` en vez de `-1`) que no llegó a nuestro `BDOS.ASM` — cae en una
+rama `if`/`else` que el preprocesado de condicionales dejó inactiva.

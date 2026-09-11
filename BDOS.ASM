@@ -18,8 +18,11 @@
 ;
 on	equ	0ffffh
 off	equ	00000h
-MPM	equ	off
-BANKED	equ	on
+; CPM3_SD81: MPM/BANKED quitados -- ya cumplieron su unico proposito
+; (decidir las ramas if/else en el preprocesado, ver memory_map.md) y
+; no se usan como valores en ningun sitio del codigo (solo en mis
+; propios comentarios de traza) -- colisionaban con "banked" de
+; BIOSKRNL.ASM (zmac no distingue mayus/minus) sin aportar nada.
 
 ;
 ;	equates for non graphic characters
@@ -47,7 +50,15 @@ cr	equ	0dh	; carriage return
 lf	equ	0ah	; line feed
 ctl	equ	5eh	; up arrow
 
-		org	0000h
+; CPM3_SD81: $8800 (no $0000) -- tiene que quedar CONTIGUO con el resto
+; del XIOS ($6000 en adelante, el ultimo byte usado por init.z80 es
+; $87FE) para que "LOAD FAST SYSTEM.BIN CODE 24576" (un solo bloque
+; plano desde $6000) cargue tambien esto. $0000 rompia la carga: el
+; .cim pasaba a empezar en $0000, desplazando TODO el fichero $6000
+; bytes de mas una vez cargado en $6000 -- confirmado en hardware
+; (arranque completamente muerto, ni siquiera "INIT"). Cabe de sobra
+; en los bloques 4-5 (hasta ~$BC00), sin necesitar mc45_ext67.
+		org	08800h
 base		equ	$
 
 ; CPM3_SD81: bnkbdos$pg/resbdos$pg/bios$pg (offsets relativos a "base")
@@ -204,14 +215,14 @@ bdose:	; Arrive here from user programs
 	lxi h,0
 	shld dircnt ; dircnt,multnum = 0
 	lda olddsk
-	sta seldsk ; Set seldsk
+	sta bd$seldsk ; Set bd$seldsk
 
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 	dcr a
 	sta copy$cr$init
 ; CPM3_SD81: [endif] (linea 240)
 
-	; If mult$cnt ~= 1 then read or write commands
+	; If mult$cnt ~= 1 then bd$read or bd$write commands
 	; are handled by the shell
 	lda mult$cnt
 	dcr a
@@ -758,7 +769,7 @@ reset$dma:
 	lhld hold$dma
 reset$dma1:
 	shld dmaad
-	jmp setdma
+	jmp bd$setdma
 
 shell$err:
 	pop b
@@ -802,8 +813,8 @@ shell$rtn:
 ;
 ;	Console handlers
 ;
-conin:
-	;read console character to A
+bd$conin:
+	;bd$read console character to A
 	lxi h,kbchar
 	mov a,m
 	mvi m,0
@@ -817,8 +828,8 @@ conech:
 	LXI H,STA$RET
 	PUSH H
 CONECH0:
-	;read character with echo
-	call conin
+	;bd$read character with echo
+	call bd$conin
 	call echoc
 	JC CONECH1 ;echo character?
         ;character must be echoed before return
@@ -916,7 +927,7 @@ conbrk:	;check for character ready
 ; CPM3_SD81: [endif] (linea 949)
 		ani 1
 	rz ;NO
-		;character ready, read it
+		;character ready, bd$read it
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 		CALL SET$CTLS$MODE
 ; CPM3_SD81: [endif] (linea 955)
@@ -933,7 +944,7 @@ conbrk:	;check for character ready
 	CMP M
 	JNZ CONBRK2 ;NO
 		MVI M,0 ; KBCHAR = 0
-		;found ctls, read next character
+		;found ctls, bd$read next character
 	CONBRK2:
 
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
@@ -977,7 +988,7 @@ conbrk:	;check for character ready
 		;character in accum, save it
 		MOV M,A
 	conb1:
-		;return with true set in accumulator
+		;return with bd$true set in accumulator
 		mvi a,1
 	ret
 	CONB2:
@@ -1017,14 +1028,14 @@ QCONOUTF:
 	JNZ SCONOUTF ;YES
 	JMP CONOUTF
 ;
-conout:
-	;compute character position/write console char from C
-	;compcol = true if computing column position
+bd$conout:
+	;compute character position/bd$write console char from C
+	;compcol = bd$true if computing column position
 	lda compcol
 	ora a
 	jnz compout
-		;write the character, then compute the column
-		;write console character from C
+		;bd$write the character, then compute the column
+		;bd$write console character from C
 		;B ~= 0 -> ESCAPE SEQUENCE DECODING
 		LDA CONMODE
 	ANI 14H
@@ -1085,7 +1096,7 @@ ctlout:
 		;send preceding up arrow
 		push psw
 	mvi c,ctl
-	call conout ;up arrow
+	call bd$conout ;up arrow
 		pop psw
 	ori 40h ;becomes graphic letter
 		mov c,a ;ready to print
@@ -1109,7 +1120,7 @@ TABOUT1:
 	;expand tabs to console
 	mov a,c
 	cpi tab
-	jnz conout ;direct to conout if not
+	jnz bd$conout ;direct to bd$conout if not
 		;tab encountered, move to next tab position
 	tab0:
 
@@ -1123,7 +1134,7 @@ TABOUT1:
 ; CPM3_SD81: [endif] (linea 1156)
 
 		mvi c,' '
-	call conout ;another blank
+	call bd$conout ;another blank
 		lda column
 	ani 111b ;column mod 8 = 0 ?
 		jnz tab0 ;back for another if not
@@ -1153,7 +1164,7 @@ crlfp:
 	;print #, cr, lf for ctlx, ctlu, ctlr functions
 	;then move to strtcol (starting column)
 	mvi c,'#'
-	call conout
+	call bd$conout
 	call crlf
 	;column = 0, move to position strtcol
 	crlfp0:
@@ -1162,16 +1173,16 @@ crlfp:
 		cmp m
 	rnc ;stop when column reaches strtcol
 		mvi c,' '
-	call conout ;print blank
+	call bd$conout ;print blank
 		jmp crlfp0
 ;;
 ;
 crlf:
 	;carriage return line feed sequence
 	mvi c,cr
-	call conout
+	call bd$conout
 	mvi c,lf
-	jmp conout
+	jmp bd$conout
 	;ret
 ;
 print:
@@ -1295,7 +1306,7 @@ clear$right:
 	cmp m
 	rnc
 	mvi c,20h
-	call conout
+	call bd$conout
 	jmp clear$right
 ;
 reverse:
@@ -1304,7 +1315,7 @@ reverse:
 	cmp m
 	rnc
 	mvi c,ctlh
-	call conout
+	call bd$conout
 	jmp reverse
 ;
 chk$buffer$size:
@@ -1410,7 +1421,7 @@ readi:
 ; CPM3_SD81: [else] (linea 1444)
 ; CPM3_SD81: [endif] (linea 1455)
 
-read:	;read to info address (max length, current length, buffer)
+bd$read:	;bd$read to info address (max length, current length, buffer)
 
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 	call init$xpos
@@ -1441,7 +1452,7 @@ readx1:
 	;C = maximum buffer length,
 	;HL= next to fill - 1
 	readnx:
-		;read next character, BC, HL active
+		;bd$read next character, BC, HL active
 		push b
 	push h ;blen, cmax, HL saved
 		readn0:
@@ -1604,7 +1615,7 @@ nxtline:
 	cmp b
 	jz read$n0
  			mvi c,ctlh
-	call conout
+	call bd$conout
 	jmp ctlb$l3
 		not$ctlb:
 			cpi ctlk
@@ -1719,7 +1730,7 @@ nxtline:
 	mov a,m
 	ora a
 	jnz readx
-				jmp read
+				jmp bd$read
 			    backx1:
 ; CPM3_SD81: [else] (linea 1769)
 ; CPM3_SD81: [endif] (linea 1772)
@@ -1740,7 +1751,7 @@ nxtline:
 		do$ctlu:
 			call crlfp ;physical eol
 			pop h ;discard starting position
-			jmp read ;to start all over
+			jmp bd$read ;to start all over
 		notu:
 			;not line delete, repeat line?
 			cpi ctlr
@@ -1942,7 +1953,7 @@ patch$064b:		mov a,b ;move length to A
 	jmp readnx
 ; CPM3_SD81: [endif] (linea 1991)
 		readen:
-			;end of read operation, store blen
+			;end of bd$read operation, store blen
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 			call expand
 ; CPM3_SD81: [endif] (linea 1996)
@@ -1958,14 +1969,14 @@ patch$064b:		mov a,b ;move length to A
 			LXI H,0
 	SHLD CONBUFFADD
 			mvi c,cr
-	jmp conout ;return carriage
+	jmp bd$conout ;return carriage
 			;ret
 ;
 func1	equ	CONECH
 	;return console character with echo
 ;
 func2:	equ	tabout
-	;write console character with tab expansion
+	;bd$write console character with tab expansion
 ;
 func3:
 	;return reader character
@@ -1973,14 +1984,14 @@ func3:
 	jmp sta$ret
 ;
 ;func4:	equated to punchf
-	;write punch character
+	;bd$write punch character
 ;
 ;func5:	equated to listf
-	;write list character
-	;write to list device
+	;bd$write list character
+	;bd$write to list device
 ;
 func6:
-	;direct console i/o - read if 0ffh
+	;direct console i/o - bd$read if 0ffh
 	mov a,c
 	inr a
 	jz dirinp ;0ffh => 00h, means input mode
@@ -2012,14 +2023,14 @@ func8:
 	jmp sta$ret
 ;
 func9:
-	;write line until $ encountered
+	;bd$write line until $ encountered
 	xchg	;was lhld info	
 	mov c,l
 	mov b,h ;BC=string address
 	jmp print ;out to console	
 
 func10	equ	readi
-	;read a buffered console line
+	;bd$read a buffered console line
 
 func11:
 	;IS CONMODE(1) TRUE?
@@ -2136,8 +2147,8 @@ SCONOUTF	EQU	CONOUTF
 ;
 ;	data areas
 ;
-compcol:db	0	;true if computing column position
-strtcol:db	0	;starting column position after read
+compcol:db	0	;bd$true if computing column position
+strtcol:db	0	;starting column position after bd$read
 
 ; CPM3_SD81: [if not BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
 ; CPM3_SD81: [endif] (linea 2195)
@@ -2223,8 +2234,8 @@ lret	equ	aret	; low(aret)
 
 ;	literal constants
 
-true	equ	0ffh	; constant true
-false	equ	000h	; constant false
+bd$true	equ	0ffh	; constant bd$true
+bd$false	equ	000h	; constant bd$false
 enddir	equ	0ffffh	; end of directory
 byte	equ	1	; number of bytes for "byte" type
 word	equ	2	; number of bytes for "word" type
@@ -2237,12 +2248,12 @@ tbuff	equ	0080h	; default buffer location
 ;	error message handlers
 
 rod$error:
-	; report read/only disk error
+	; report bd$read/only disk error
 	mvi c,2
 	jmp goerr
 
 rof$error:
-	; report read/only file error
+	; report bd$read/only file error
 	mvi c,3
 	jmp goerr
 
@@ -2434,18 +2445,18 @@ selectdisk:
 		lhld maxall ; largest allocation number
 		mov a,h ; 00 indicates < 255
 		lxi h,single
-	mvi m,true ; Assume a=00
+	mvi m,bd$true ; Assume a=00
 		ora a
 	jz retselect
 		; high order of maxall not zero, use double dm
-		mvi m,false
+		mvi m,bd$false
 	retselect:
 		; C flag set indicates successful select
 		stc
 	ret
 
-home:
-	; Move to home position, then offset to start of dir
+bd$home:
+	; Move to bd$home position, then offset to start of dir
 	call homef
 	xra a ; constant zero to accumulator
 	lhld curtrka
@@ -2473,7 +2484,7 @@ rdbuff:
 
 wrbuff:
 	; Write buffer and check condition
-	; write type (wrtype) is in register c
+	; bd$write type (wrtype) is in register c
 	xra a
 	sta readf$sw
 	call writef ; current drive, track, sector, dma
@@ -2508,24 +2519,24 @@ chk$media$flag:
 	rz ; no - return error
 	call media$change
 	pop h ; Discard return address
-	; Was this a flush operation (fx = 48)?
+	; Was this a bd$flush operation (fx = 48)?
 	lda fx
 	cpi 48
 	rz ; yes
-	; Is this a flush to another drive?
+	; Is this a bd$flush to another drive?
 	lxi h,adrive
-	lda seldsk
+	lda bd$seldsk
 	cmp m
 	jnz reset$relog
-	; Bail out if fx = read, write, close, or search next
+	; Bail out if fx = bd$read, bd$write, close, or search next
 	call chk$exit$fxs
-	; Is this a directory read operation?
+	; Is this a directory bd$read operation?
 	lda readf$sw
 	ora a
 	rnz ; yes
-	; Error - directory write operation
+	; Error - directory bd$write operation
 	mvi c,2
-	jmp goerr ; Return disk read/only error
+	jmp goerr ; Return disk bd$read/only error
 
 reset$relog:
 	; Reset relog if flushing to another drive
@@ -2703,7 +2714,7 @@ modnum	equ	14	; data module number
 
 maxmod	equ	64	; largest module number
 
-fwfmsk	equ	80h	; file write flag is high order modnum
+fwfmsk	equ	80h	; file bd$write flag is high order modnum
 namlen	equ	15	; name length
 reccnt	equ	15	; record count field
 dskmap	equ	16	; disk map field
@@ -2909,7 +2920,7 @@ setfcb:
 	; fcb(cr) = vrecord
 	lda vrecord
 	mov m,a
-	; Is fx < 22? (sequential read or write)
+	; Is fx < 22? (sequential bd$read or bd$write)
 	lda fx
 	cpi 22
 	jnc $+4 ; no
@@ -3014,7 +3025,7 @@ chk$media$fcb:
 	lhld bdosadd
 	call subdh
 	jnc chk$media1 ; no
-	; Is rlog(drive) true?
+	; Is rlog(drive) bd$true?
 	lhld rlog
 	call testvector
 	rz ; no
@@ -3054,7 +3065,7 @@ set$cdisk1:
 	ret
 
 nowrite:
-	; Return true if dir checksum difference occurred
+	; Return bd$true if dir checksum difference occurred
 	lhld rodsk
 
 test$vector:
@@ -3067,14 +3078,14 @@ test$vector1:
 	ret ; non zero if curdsk bit on
 
 check$rodir:
-	; Check current directory element for read/only status
+	; Check current directory element for bd$read/only status
 	call getdptra ; address of element
 
 check$rofile:
 	; Check current buff(dptr) or fcb(0) for r/o status
 	call ro$test
 	rnc ; Return if not set
-	jmp rof$error ; Exit to read only disk message
+	jmp rof$error ; Exit to bd$read only disk message
 
 ro$test:
 	lxi d,rofile
@@ -3084,10 +3095,10 @@ ro$test:
 	ret ; carry set if r/o
 
 check$write:
-	; Check for write protected disk
+	; Check for bd$write protected disk
 	call nowrite
-	rz ; ok to write if not rodsk
-	jmp rod$error ; read only disk error
+	rz ; ok to bd$write if not rodsk
+	jmp rod$error ; bd$read only disk error
 
 getdptra:
 	; Compute the address of a directory element at
@@ -3107,7 +3118,7 @@ addh:
 getmodnum:
 	; Compute the address of the module number
 	; bring module number to accumulator
-	; (high order bit is fwf (file write flag)
+	; (high order bit is fwf (file bd$write flag)
 	lhld info
 	lxi d,modnum
 	dad d ; hl=.fcb(modnum)
@@ -3131,7 +3142,7 @@ clr$ext:
 
 setfwf:
 	call getmodnum ; hl=.fcb(modnum), a=fcb(modnum)
-	; Set fwf (file write flag) to "1"
+	; Set fwf (file bd$write flag) to "1"
 	ori fwfmsk
 	mov m,a ; fcb(modnum)=fcb(modnum) or 80h
 	; also returns non zero in accumulator
@@ -3175,7 +3186,7 @@ newchecksum:
 	mvi c,0feh ; Drop through to compute new checksum
 checksum:
 	; Compute current checksum record and update the
-	; directory element if c=true, or check for = if not
+	; directory element if c=bd$true, or check for = if not
 	; drec < chksiz?
 	lhld drec
 	xchg
@@ -3192,7 +3203,7 @@ checksum:
 		xchg
 		lhld drec
 		dad d ; hl = .check(drec)
-		pop b ; Recall true=0ffh or false=00 to c
+		pop b ; Recall bd$true=0ffh or bd$false=00 to c
 		inr c ; 0ffh produces zero flag
 		jz initial$cs
 		inr c ; 0feh produces zero flag
@@ -3247,8 +3258,8 @@ media$change:
 	ret
 
 set$ro:
-	; Set current disk to read/only
-	lda seldsk
+	; Set current disk to bd$read/only
+	lda bd$seldsk
 	lxi d,rodsk
 	call set$cdisk1 ; sets bit to 1
 	; high water mark in directory goes to max
@@ -3262,7 +3273,7 @@ set$ro:
 	ret
 
 set$rlog:
-	; rlog(seldsk) = true
+	; rlog(bd$seldsk) = bd$true
 	lhld olog
 	call test$vector
 	rz
@@ -3297,7 +3308,7 @@ test$media$flag:
 chk$exit$fxs:
 	lxi h,goback
 	push h
-	; does fx = read or write function?
+	; does fx = bd$read or bd$write function?
 	; and is drive removable?
 	lxi h,rw$fxs
 	call tst$log0
@@ -3426,12 +3437,12 @@ wrdir0:
 setdata:
 	; Set data dma address
 	lhld dmaad
-	jmp setdma ; to complete the call
+	jmp bd$setdma ; to complete the call
 
 setdir1:
 	call get$buffa
 
-setdma:
+bd$setdma:
 	; hl=.dma address to set (i.e., buffa or dmaad)
 	shld curdma
 	ret
@@ -3458,7 +3469,7 @@ dir$to$user:
 	ret
 
 make$fcb$inv: ; Flag fcb as invalid
-	; Reset fcb write flag
+	; Reset fcb bd$write flag
 	call setfwf
 	; Set 1st two bytes of diskmap to ffh
 	inx h
@@ -3505,7 +3516,7 @@ read$dir:
 	jmp r$dir1
 
 r$dir:
-	; Read next directory entry, with c=true if initializing
+	; Read next directory entry, with c=bd$true if initializing
 
 	lhld dirmax
 	xchg ; in preparation for subtract
@@ -3713,7 +3724,7 @@ get$nalbs: ; Get # of allocation vector bytes
 
 initialize:
 	; Initialize the current disk
-	; lret = false ; set to true if $ file exists
+	; lret = bd$false ; set to bd$true if $ file exists
 	; Compute the length of the allocation vector - 2
 
 ; CPM3_SD81: [if MPM] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
@@ -3780,8 +3791,8 @@ initialize2:
 	mov m,e
 	inx h
 	mov m,d ; sets reserved directory blks
-	; allocation vector initialized, home disk
-	call home
+	; allocation vector initialized, bd$home disk
+	call bd$home
 	; cdrmax = 3 (scans at least one directory record)
 	lhld cdrmaxa
 	mvi m,4
@@ -3795,7 +3806,7 @@ initialize2:
 	; Read directory entries and check for allocated storage
 
 	initial2:
-		mvi c,true
+		mvi c,bd$true
 	call read$dir
 		call end$of$dir
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
@@ -3953,7 +3964,7 @@ search:
 search1: ; entry point used by rename
 	call set$end$dir ; dcnt = enddir
 	call tst$log$fxs
-	cz home
+	cz bd$home
 	; (drop through to searchn)
 
 searchn:
@@ -3969,7 +3980,7 @@ searchn:
 
 	call search$hash
 	jnz search$fin
-	mvi c,false
+	mvi c,bd$false
 	call read$dir ; Read next dir element
 	call end$of$dir
 	jz search$fin
@@ -4593,7 +4604,7 @@ open$copy:
 	dcx h
 	dcx h
 	mov d,m
-	push d ; Save extent# & module# with fcb write flag set
+	push d ; Save extent# & module# with fcb bd$write flag set
 	call getdptra
 	xchg ; hl = .buff(dptr)
 	lhld info ; hl=.fcb(0)
@@ -4681,7 +4692,7 @@ restore$rc1:
 	ret
 
 close:
-	; Locate the directory element and re-write it
+	; Locate the directory element and re-bd$write it
 	xra a
 	sta lret
 
@@ -4690,7 +4701,7 @@ close:
 
 	call nowrite
 	rnz ; Skip close if r/o disk
-	; Check file write flag - 0 indicates written
+	; Check file bd$write flag - 0 indicates written
 	call getmodnum ; fcb(modnum) in a
 	ani fwfmsk
 	rnz ; Return if bit remains set
@@ -4918,7 +4929,7 @@ make:
 	dad d
 	mov m,d
 	inx h
-	; Clear and save file write flag of modnum
+	; Clear and save file bd$write flag of modnum
 	mov a,m
 	push a
 	push h
@@ -4943,17 +4954,17 @@ make:
 	mvi c,0
 	lxi d,fcblen
 	call copy$dir0
-	; and restore the file write flag
+	; and restore the file bd$write flag
 	pop h
 	pop a
 	mov m,a
-	; and set the fcb write flag to "1"
+	; and set the fcb bd$write flag to "1"
 	call fix$hash
 	jmp setfwf
 
 open$reel:
 	; Close the current extent, and open the next one
-	; if possible.	rmf is true if in read mode
+	; if possible.	rmf is bd$true if in bd$read mode
 
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 	call reset$copy$cr$only
@@ -5006,7 +5017,7 @@ open$reel:
 		jnz open$reel1
 			; end of file encountered
 			lda rmf
-	inr a ; 0ffh becomes 00 if read
+	inr a ; 0ffh becomes 00 if bd$read
 			jz open$r$err ; sets lret = 1
 			; Try to extend the current file
 			call make
@@ -5056,7 +5067,7 @@ open$reel:
 		cmp m
 	jnc open$reel4 ; no
 		dcr m ; fcb(ex) = fcb(ex) - 1
-		; Is this a read fx?
+		; Is this a bd$read fx?
 		lda rmf
 	inr a
 	jz set$lret1 ; yes - Don't advance ext
@@ -5069,14 +5080,14 @@ open$reel:
 seqdiskread:
 diskread:	; (may enter from seqdiskread)
 	call tst$inv$fcb ; Check for valid fcb
-	mvi a,true
-	sta rmf ; read mode flag = true (open$reel)
+	mvi a,bd$true
+	sta rmf ; bd$read mode flag = bd$true (open$reel)
 
 ; CPM3_SD81: [if MPM] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
 ; CPM3_SD81: [endif] (linea 5421)
 
 	; Read the next record from the current fcb
-	call getfcb ; sets parameters for the read
+	call getfcb ; sets parameters for the bd$read
 diskread0:
 	lda vrecord
 	lxi h,rcount
@@ -5097,7 +5108,7 @@ diskread0:
 	ora a
 	jnz setlret1 ; Stop at eof
 	recordok:
-		; Arrive with fcb addressing a record to read
+		; Arrive with fcb addressing a record to bd$read
 
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 		call set$copy$cr$only
@@ -5110,7 +5121,7 @@ diskread0:
 
 		jz setlret1 ; Reading unwritten data
 	recordok1:
-		; Record has been allocated, read it
+		; Record has been allocated, bd$read it
 		call atran ; arecord now a disk address
 		call check$nprs
 		jc setfcb
@@ -5208,7 +5219,7 @@ check$npr2: ; a = min(vrecord + mult$num),80h) = x
 	; b = vrecord & ~blkmsk
 	; e = blkmsk + 1
 	pop h ; h = x
-	; Is this a read function?
+	; Is this a bd$read function?
 	lda rmf
 	ora a
 	jz check$npr21 ; no
@@ -5260,7 +5271,7 @@ check$npr4:
 	mov a,h
 	ora l
 	jnz check$npr45 ; no
-	; Is this a read function?
+	; Is this a bd$read function?
 	lda rmf
 	ora a
 	jnz check$npr45 ; no
@@ -5364,7 +5375,7 @@ check$npr10a:
 
 reset$fwf:
 	call getmodnum ; hl=.fcb(modnum), a=fcb(modnum)
-	; Reset the file write flag to mark as written fcb
+	; Reset the file bd$write flag to mark as written fcb
 	ani (not fwfmsk) and 0ffh ; bit reset
 	mov m,a ; fcb(modnum) = fcb(modnum) and 7fh
 	ret
@@ -5381,11 +5392,11 @@ set$filewf:
 
 seqdiskwrite:
 diskwrite:	; (may enter here from seqdiskwrite above)
-	mvi a,false
-	sta rmf ; read mode flag
+	mvi a,bd$false
+	sta rmf ; bd$read mode flag
 	; Write record to currently selected file
 
-	call check$write ; in case write protected
+	call check$write ; in case bd$write protected
 
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 	lda xfcb$read$only
@@ -5406,7 +5417,7 @@ diskwrite:	; (may enter here from seqdiskwrite above)
 	jnz set$aret
 
 	lhld info ; hl = .fcb(0)
-	call check$rofile ; may be a read-only file
+	call check$rofile ; may be a bd$read-only file
 
 	call tst$inv$fcb ; Test for invalid fcb
 
@@ -5425,10 +5436,10 @@ disk$write0:
 ; CPM3_SD81: [if MPM] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
 ; CPM3_SD81: [endif] (linea 5811)
 
-	; Can write the next record, so continue
+	; Can bd$write the next record, so continue
 	call index ; Z flag set if arecord = 0
 	jz diskwrite2
-	; Was the last write operation for the same block & drive?
+	; Was the last bd$write operation for the same block & drive?
 	lxi h,adrive
 	lxi d,last$drive
 	mvi c,3
@@ -5442,7 +5453,7 @@ diskwrite15:
 ; CPM3_SD81: [if MPM] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
 ; CPM3_SD81: [endif] (linea 5845)
 
-	mvi c,0 ; Marked as normal write operation for wrbuff
+	mvi c,0 ; Marked as normal bd$write operation for wrbuff
 	jmp diskwr1
 diskwrite2:
 
@@ -5513,12 +5524,12 @@ diskwrite2:
 	inx h
 	mov m,d ; double wd
 		diskwru:
-		; disk write to previously unallocated block
-		mvi c,2 ; marked as unallocated write
+		; disk bd$write to previously unallocated block
+		mvi c,2 ; marked as unallocated bd$write
 	diskwr1:
-	; Continue the write operation of no allocation error
-	; c = 0 if normal write, 2 if to prev unalloc block
-	push b ; Save write flag
+	; Continue the bd$write operation of no allocation error
+	; c = 0 if normal bd$write, 2 if to prev unalloc block
+	push b ; Save bd$write flag
 	call atran ; arecord set
 diskwr10:
 		lda fx
@@ -5529,10 +5540,10 @@ diskwr10:
 	dcr a
 	jnz diskwr11 ; old allocation
 
-		; write random zero fill + new block
+		; bd$write random zero fill + new block
 
 		pop b
-	push a ; zero write flag
+	push a ; zero bd$write flag
 		lhld arecord
 	push h
 		lxi h,phymsk
@@ -5613,12 +5624,12 @@ fill00:
 	call check$nprs
 
 	jc dont$write
-	jz write
+	jz bd$write
 
-	mvi a,2 ; deblock write code
+	mvi a,2 ; deblock bd$write code
 	call deblock$dta
 	jmp dont$write
-write:
+bd$write:
 	call setdata
 	call seek
 
@@ -5627,10 +5638,10 @@ write:
 	call setbnkf
 ; CPM3_SD81: [endif] (linea 6033)
 
-	; Discard matching BCB if write is direct
+	; Discard matching BCB if bd$write is direct
 	call discard$data$bcb
 
-	; Set write flag to zero if arecord & blkmsk ~= 0
+	; Set bd$write flag to zero if arecord & blkmsk ~= 0
 
 	pop b
 	push b
@@ -5668,12 +5679,12 @@ dont$write:
 ; CPM3_SD81: [endif] (linea 6097)
 
 noupdate:
-	; Set file write flag if reset
+	; Set file bd$write flag if reset
 	call set$filewf
 
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 	jnz disk$write3
-	; Reset fcb file write flag to ensure t3' gets
+	; Reset fcb file bd$write flag to ensure t3' gets
 	; reset by the close function
 	call reset$fwf
 	call reset$copy$cr$only
@@ -5686,7 +5697,7 @@ disk$write3:
 	; ret
 
 rseek:
-	; Random access seek operation, c=0ffh if read mode
+	; Random access seek operation, c=0ffh if bd$read mode
 	; fcb is assumed to address an active file control block
 	; (1st block of FCB = 0ffffh if previous bad seek)
 	push b ; Save r/w flag
@@ -5765,7 +5776,7 @@ rseek:
 		pop d
 	push d
 	inr e
-	jnz rseek2 ; jmp if write fx
+	jnz rseek2 ; jmp if bd$write fx
 		inr e
 	pop d
 	jmp set$lret1 ; error - reading unwritten data
@@ -5810,16 +5821,16 @@ rseek:
 		lda lret
 	inr a
 	jnz seekok ; Open successful?
-		; Cannot open the file, read mode?
+		; Cannot open the file, bd$read mode?
 		pop d
 	pop h
-	pop b ; r/w flag to c (=0ffh if read)
+	pop b ; r/w flag to c (=0ffh if bd$read)
 		push b
 	push h
 	push d ; Restore stack
 		mvi l,4 ; Seek to unwritten extent #4
-		inr c ; becomes 00 if read operation
-		jz badseek ; Skip to error if read operation
+		inr c ; becomes 00 if bd$read operation
+		jz badseek ; Skip to error if bd$read operation
 		; Write operation, make new extent
 		call make
 		mvi l,5 ; cannot create new extent #5
@@ -5869,15 +5880,15 @@ rseek:
 	jmp sta$ret ; lret=#, nonzero
 
 randiskread:
-	; Random disk read operation
-	mvi c,true ; marked as read operation
+	; Random disk bd$read operation
+	mvi c,bd$true ; marked as bd$read operation
 	call rseek
 	cz diskread ; if seek successful
 	ret
 
 randiskwrite:
-	; Random disk write operation
-	mvi c,false ; marked as write operation
+	; Random disk bd$write operation
+	mvi c,bd$false ; marked as bd$write operation
 	call rseek
 	cz diskwrite ; if seek successful
 	ret
@@ -6005,12 +6016,12 @@ disk$select:
 	; Select disk info for subsequent input or output ops
 	sta adrive
 disk$select1: ; called by deblock
-	mov m,a ; curdsk = seldsk or adrive
-	mov d,a ; Save seldsk in register D for selectdisk call
+	mov m,a ; curdsk = bd$seldsk or adrive
+	mov d,a ; Save bd$seldsk in register D for selectdisk call
 	lhld dlog
 	call test$vector ; test$vector does not modify DE
 	mov e,a
-	push d ; Send to seldsk, save for test below
+	push d ; Send to bd$seldsk, save for test below
 	call selectdisk
 	pop h ; Recall dlog vector
 	jnc sel$error ; returns with C flag set if select ok
@@ -6019,16 +6030,16 @@ disk$select1: ; called by deblock
 	ret
 
 tmpselect:
-	lxi h,seldsk
+	lxi h,bd$seldsk
 	mov m,e
 
 curselect:
-	lda seldsk
+	lda bd$seldsk
 	lxi h,curdsk
 	cmp m
 	jnz select
 	cpi 0ffh
-	rnz ; return if seldsk ~= ffh
+	rnz ; return if bd$seldsk ~= ffh
 
 select:
 	call disk$select
@@ -6122,8 +6133,8 @@ reselect1:
 	sta linfo ; Save drive code
 	cpi 0ffh
 	jz noselect
-		; auto select function, seldsk saved above
-		sta seldsk
+		; auto select function, bd$seldsk saved above
+		sta bd$seldsk
 	noselect:
 		call curselect
 		; Set user code
@@ -6153,10 +6164,10 @@ check$media:
 	call discard$dir
 	lhld dcnt
 	push h
-	call home
+	call bd$home
 	call set$end$dir
 check$media1:
-	mvi c,false
+	mvi c,bd$false
 	call r$dir
 	lxi h,relog
 	mov a,m
@@ -6703,8 +6714,8 @@ func14:
 
 ; CPM3_SD81: [if MPM] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
 ; CPM3_SD81: [else] (linea 8183)
-	call tmpselect ; seldsk = reg e
-	lda seldsk
+	call tmpselect ; bd$seldsk = reg e
+	lda bd$seldsk
 	sta olddsk
 	ret
 ; CPM3_SD81: [endif] (linea 8188)
@@ -6827,7 +6838,7 @@ openx0:
 	call get$dtba$8
 	ora a
 	jnz openx0a ; no
-	; Is sfcb password mode read or write?
+	; Is sfcb password mode bd$read or bd$write?
 	mov a,m
 	ani 0c0h
 	jz openx1a ; no
@@ -6897,7 +6908,7 @@ func16:
 	inr a
 	rz
 
-	jmp flush ; Flush buffers
+	jmp bd$flush ; Flush buffers
 
 ; CPM3_SD81: [if MPM] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
 ; CPM3_SD81: [endif] (linea 8590)
@@ -7097,7 +7108,7 @@ make00:
 	ldax d
 	ani 0e0h
 	jnz make2
-	mvi a,080h ; default password mode is read protect
+	mvi a,080h ; default password mode is bd$read protect
 make2:
 	sta pw$mode
 	; Set xfcb password mode field
@@ -7106,7 +7117,7 @@ make2:
 	pop a
 	mov m,a
 	; Set xfcb password and password checksum
-	; Fix hash table and write xfcb
+	; Fix hash table and bd$write xfcb
 	call set$pw
 	mov m,b
 	call sdl3
@@ -7166,7 +7177,7 @@ func24:
 
 func25:
 	; Return selected disk number
-	lda seldsk
+	lda bd$seldsk
 	jmp sta$ret
 
 func26:
@@ -7231,16 +7242,16 @@ func32:
 		ret
 
 func33:
-	; Random disk read operation
+	; Random disk bd$read operation
 	call reselect
 	call check$fcb
-	jmp randiskread ; to perform the disk read
+	jmp randiskread ; to perform the disk bd$read
 
 func34:
-	; Random disk write operation
+	; Random disk bd$write operation
 	call reselect
 	call check$fcb
-	jmp randiskwrite ; to perform the disk write
+	jmp randiskwrite ; to perform the disk bd$write
 
 func35:
 	; Return file size (0-262,144)
@@ -7342,8 +7353,8 @@ func46:
 	xchg ; de = alloc vector addr
 	call get$nalbs ; Get # alloc blocks
 	; hl = # of allocation vector bytes
-	; Count # of true bits in allocation vector
-	lxi b,0 ; bc = true bit accumulator
+	; Count # of bd$true bits in allocation vector
+	lxi b,0 ; bc = bd$true bit accumulator
 gsp1:	ldax d
 gsp2:	ora a
 	jz gsp4
@@ -7412,7 +7423,7 @@ flush1:
 	push a
 	push h
 	mov e,a
-	call tmpselect ; seldsk = e
+	call tmpselect ; bd$seldsk = e
 	lda fx
 	cpi 48
 	jz flush3
@@ -7426,7 +7437,7 @@ flush1:
 
 flush3:
 	call flushx
-	; if e = 0ffh then discard buffers after possible flush
+	; if e = 0ffh then discard buffers after possible bd$flush
 	lda linfo
 	inr a
 	jnz flush4
@@ -7440,7 +7451,7 @@ flush5:
 	jnz flush1
 	ret
 
-flush:
+bd$flush:
 	call flushf
 	call diocomp
 flushx:
@@ -7613,7 +7624,7 @@ func99:					; Truncate file
 	cnz chk$pw$error
 ; CPM3_SD81: [endif] (linea 9566)
 
-	mvi c,true
+	mvi c,bd$true
 	call rseek
 	jnz lret$eq$ff
 	; compute dir$fcb size
@@ -7628,7 +7639,7 @@ func99:					; Truncate file
 	jz lret$eq$ff  ; yes ( = )
 	; Perform truncate
 	call check$rodir ; may be r/o file
-	call wrdir ; verify BIOS can write to disk
+	call wrdir ; verify BIOS can bd$write to disk
 	call update$stamp ; Set update stamp
 	call search$extnum
 trunc1:
@@ -8097,7 +8108,7 @@ retmon:
 ;	data areas
 ;
 efcb:	db	empty	; 0e5=available dir entry
-rodsk:	dw	0	; read only disk vector
+rodsk:	dw	0	; bd$read only disk vector
 dlog:	dw	0	; logged-in disks
 
 ; CPM3_SD81: [if MPM] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
@@ -8177,7 +8188,7 @@ mult$num:	ds	byte	; multi-sector number
 tranv:	ds	word	; address of translate vector
 lock$unlock:
 make$flag:
-rmf:	ds	byte	; read mode flag for open$reel
+rmf:	ds	byte	; bd$read mode flag for open$reel
 incr$pdcnt:
 dirloc: ds	byte	; directory flag in rename, etc.
 free$mode:
@@ -8199,12 +8210,12 @@ save$xfcb:
 
 ; CPM3_SD81: [endif] (linea 10207)
 
-single: ds	byte	; set true if single byte allocation map
+single: ds	byte	; set bd$true if single byte allocation map
 
 ; CPM3_SD81: [if MPM] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
 ; CPM3_SD81: [endif] (linea 10215)
 
-seldsk: ds	byte	; disk on entry to bdos
+bd$seldsk: ds	byte	; disk on entry to bdos
 rcount: ds	byte	; record count in current fcb
 extval: ds	byte	; extent number and extmsk
 save$mod:
@@ -8225,7 +8236,7 @@ arecord:ds	word	; current actual record
 save$ranr:	ds	3	; random record save area
 arecord1:	ds	word	; current actual block# * blkmsk
 attributes:	ds	byte	; make attribute hold area
-readf$sw:	ds	byte	; BIOS read/write switch
+readf$sw:	ds	byte	; BIOS bd$read/bd$write switch
 
 ;******** following variable order critical *****************
 
@@ -8236,7 +8247,7 @@ high$ext:	ds	byte	; fcb high ext bits
 
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 
-xfcb$read$only: ds	byte	; xfcb read only flag
+xfcb$read$only: ds	byte	; xfcb bd$read only flag
 
 ; CPM3_SD81: [endif] (linea 10255)
 ; CPM3_SD81: [if MPM] resuelto en preprocesado (BANKED=1,MPM=0) -> inactivo
@@ -8359,23 +8370,23 @@ deblock$flush2:
 	; Does track = ffff?
 	lxi h,track
 	call test$ffff
-	rz ; yes - no bcb to flush
+	rz ; yes - no bcb to bd$flush
 	; Flush bcb located by sector
 	lhld sector
 	xra a
 	mvi a,4
 	call deblock
 	lhld dtabcba
-	jmp deblock$flush ; Repeat until no bcb's to flush
+	jmp deblock$flush ; Repeat until no bcb's to bd$flush
 ; CPM3_SD81: [endif] (linea 10426)
 
 deblock:
 
 	; BDOS Blocking/Deblocking routine
-	; a = 1 -> read command
-	; a = 2 -> write command
+	; a = 1 -> bd$read command
+	; a = 2 -> bd$write command
 	; a = 3 -> locate command
-	; a = 4 -> flush command
+	; a = 4 -> bd$flush command
 	; a = 5 -> directory update
 
 	push a ; Save z flag and deblock fx
@@ -8406,7 +8417,7 @@ deblock:
 	mov a,m
 	inr a
 	jz deblock2 ; yes
-	; Is command flush?
+	; Is command bd$flush?
 	pop a
 	push a
 	cpi 4
@@ -8453,11 +8464,11 @@ deblock15:
 	; Restore selected drive
 	call curselect
 deblock2:
-	; Is deblock command flush | dir write?
+	; Is deblock command bd$flush | dir bd$write?
 	pop a
 	cpi 4
 	rnc ; yes - return
-	; Is deblock command write?
+	; Is deblock command bd$write?
 	push a
 	cpi 2
 	jnz deblock25 ; no
@@ -8467,7 +8478,7 @@ deblock2:
 	cmp m
 	jnc deblock3 ; no
 deblock25:
-	; Discard BCB on read operations in case
+	; Discard BCB on bd$read operations in case
 	; I/O error occurs
 ;;;	lhld curbcba		;[JCE] DRI Patch 7
 	call patch$1e1c
@@ -8517,7 +8528,7 @@ deblock6:
 	xchg
 	lhld dmaad
 	lxi b,80h
-	; If deblock command = read
+	; If deblock command = bd$read
 	cpi 1
 
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
@@ -8556,7 +8567,7 @@ deblock75:
 ; CPM3_SD81: [endif] (linea 10613)
 
 	call move$tpa
-	; Set physical record pending flag for write command
+	; Set physical record pending flag for bd$write command
 	call deblock10
 	mvi m,0ffh
 	ret
@@ -8594,8 +8605,8 @@ deblock12:
 
 deblock$io:
 	; a = 0 -> seek only
-	; a = 1 -> write
-	; a = 2 -> read
+	; a = 1 -> bd$write
+	; a = 2 -> bd$read
 	push a
 	call seek
 
@@ -9030,7 +9041,7 @@ search$h0:
 	call srch$hash
 	; Was search successful?
 	jnz search$h1 ; no
-	; Is directory read required?
+	; Is directory bd$read required?
 	lda rd$dir$flag
 	ora a
 	mvi c,0
@@ -9039,7 +9050,7 @@ search$h0:
 	lda fx
 	sui 18
 	rz ; Never reset dcnt for fx 18
-	; Was media change detected by above read?
+	; Was media change detected by above bd$read?
 	lda hashl
 	inr a
 	cz setenddir ; yes
@@ -9206,7 +9217,14 @@ patch$1e3e:
 
 last:
 
-	org	(((last-base)+255) and 0ff00h) - 1
+; CPM3_SD81: bug real de la fuente DRI (esta en la version original sin
+; tocar, BDOS30.ASM lineas 6231/6240): falta sumar "base" -- calcula
+; bien un TAMAÑO relativo (last-base) pero luego lo usa tal cual como
+; direccion ABSOLUTA de destino del "org", sin volver a sumar "base".
+; Invisible mientras base=$0000 (sumar 0 no cambia nada) -- salio a la
+; luz al mover la BDOS a $8800 (confirmado en hardware: RESBDOS.ASM
+; aterrizaba en $2E00 en vez de justo detras de esto, ~$B600).
+	org	base + (((last-base)+255) and 0ff00h) - 1
 	db	0
 
 ; CPM3_SD81: [endif] (linea 11587)
