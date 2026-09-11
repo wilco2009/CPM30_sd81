@@ -827,3 +827,72 @@ el mensaje completo `INITNOCCP` se ve en hardware real — `?boot` →
 bucles `?cinit`/INIT de disco → `boot$1` → `set$jumps` (cambio a
 "usuario" limpio) → `?ldccp` (stub) → mensaje "NOCCP" + parada. Falta
 CCP3.ASM/BDOS3 reales para sustituir el stub.
+
+## CCP3.ASM: ensambla limpio, simplificada (sin LOADER3.ASM/RSX)
+
+`CCP3.ASM` (fuente real de DRI, `cpm3src.zip`) ensambla limpio con
+`zmac` en aislado (`build_ccp.bat`). Cambios respecto al original:
+`ccporg` de `$040A` a `$100` (sin loader no hace falta reservarle
+hueco), `multi equ false` (líneas de comando múltiple, mecanismo RSX),
+y el bloque de detección/reubicación del loader en `start:` eliminado
+por completo (se ejecutaba siempre, no solo con `multi`, y sin
+`LOADER3.ASM` no hay nada que detectar). `scbaddr`/`banked` reubicadas
+de direcciones fijas del loader (que ahora caerían dentro de la propia
+CCP) a variables reales junto a `realdos`. 3 erratas de transcripción
+corregidas (`chain$env`→`chainenv`, `chain$flg`→`chainflg`,
+`set$byte`→`setbyte`).
+
+**Nota real**: la CCP por sí sola no hace nada — su primera instrucción
+en `start:` ya es `call bdos`. No se puede probar de verdad sin la BDOS
+integrada.
+
+## BDOS.ASM: ensambla limpio (falta enlazar con nuestras direcciones reales)
+
+Receta real de la BDOS *banked*, encontrada en el `MAKEFILE` del propio
+`cpm3src.zip` (NO es solo `BDOS30.ASM`): concatenación de
+**`CPMBDOS2.ASM` + `CONBDOS.ASM` + `BDOS30.ASM`**, en ese orden
+(`CPMBDOS2.ASM` trae `BANKED equ on`/`MPM equ off`, que activa las
+secciones `if BANKED` del resto). `makedate.lib` (macros triviales de
+fecha/copyright) es la única dependencia externa.
+
+Bugs encontrados y corregidos para que ensamble:
+- **`zmac` no evalúa bien `if not BANKED`/`if not MPM`** (o alguna
+  combinación con `not`) en esta fuente — confirmado con un análisis
+  propio de la anidación de 246 bloques `if`/`else`/`endif`: bloques
+  que debían quedar inactivos se incluían (`Mult. def.`) y bloques que
+  debían activarse se omitían (`Undeclared`). Solución: resolver los
+  246 condicionales nosotros mismos en preprocesado (script, con
+  `BANKED=1`/`MPM=0` fijos) y dejar solo el código de la rama activa,
+  quitando `if`/`else`/`endif` del todo — más fiable que depender de
+  cómo los interprete `zmac` para esta fuente en concreto.
+- **~40 erratas de transcripción tipo "$ de más o de menos"**, en
+  ambos sentidos, entre la definición real de una etiqueta y sus
+  llamadas (`mult$cnt`↔`multcnt`, `gets1`↔`get$s1`,
+  `setenddir`↔`set$end$dir`, etc.) — corregidas con alias `equ`, sin
+  tocar el código disperso por las ~9000 líneas. Una (`dirbios4`,
+  función 50 "Direct BIOS call", poco usada) no tiene definición real
+  en la fuente en absoluto — alias a `dir$bios2` por lógica del salto,
+  sin verificar en hardware.
+- Binarios con `$` como separador de nibbles (`0001$1111b`, sintaxis
+  RMAC que `zmac` no soporta) — `$` quitado mecánicamente.
+
+**Pendiente antes de integrar en `system.z80`** (ver discusión con el
+usuario, decisión tomada): `bios$pg`/`scb$pg`/`resbdos$pg`/`bnkbdos$pg`
+en `BDOS.ASM` (y en `RESBDOS.ASM`, aún sin integrar) están definidos
+como offsets relativos a `base` (`base+$FB00` etc.) siguiendo el layout
+de DRI para CP/M 3 *no-banked* (BIOS+SCB+BDOS apretados justo antes de
+`base`, todo en una zona siempre alcanzable). Ese layout no encaja con
+el nuestro (tabla de saltos duplicada en banco 3, SCB en banco 7) ni
+tiene sentido para banked (el jump table duplicado solo puede ocupar
+512 B, la BDOS no cabe ahí). Decisión: NO reorganizar nuestro layout ya
+validado en hardware — en su lugar, sustituir esos equates de offset
+por alias directos a nuestras etiquetas reales (`bootf equ ?boot`,
+`scb$pg equ 0E000h`, etc.). Esto no afecta a la compatibilidad con
+software CP/M real: ningún programa de usuario ve `bios$pg`/`scb$pg`
+directamente, es cableado interno BIOS↔BDOS↔SCB.
+
+**`RESBDOS.ASM`** (`cpm3src.zip`): módulo residente banked, se
+ensambla y enlaza APARTE del anterior (`resbdos3.spr`, no forma parte
+de `bnkbdos3.spr`) — trae `gets1`(`get$s1`)/`rd$dir`/`getxfcb1`/
+`seek$dir`/hash de directorio/etc., las rutinas que `BDOS.ASM` invoca
+vía `resbdos$pg+N`. Aún sin integrar (siguiente paso).

@@ -316,6 +316,54 @@ error$sub:
 mult$fxs:	db	20,21,33,34,40,0
 
 	maclib	makedate
+
+; CPM3_SD81: alias para erratas de transcripcion en la fuente DRI/
+; Caldera (un '$' insertado o que falta entre la definicion real y las
+; llamadas, en un sentido u otro -- ver memory_map.md). No se toca el
+; codigo disperso, solo se anade el nombre que faltaba.
+ccpflgs	equ	ccp$flgs
+common$base	equ	commonbase
+comp$cdr	equ	compcdr
+copy$dir$loc	equ	copy$dirloc
+dir$max	equ	dirmax
+dircnt	equ	dir$cnt
+diskwrite0	equ	disk$write0
+dta$bcba	equ	dtabcba
+error$mode	equ	errormode
+get$dm	equ	getdm
+get$dptra	equ	getdptra
+get$exta	equ	getexta
+getbuffa	equ	get$buffa
+getdtba	equ	get$dtba
+gets1	equ	get$s1
+getxfcb1	equ	get$xfcb1
+hashtbla	equ	hash$tbla
+lastdrive	equ	last$drive
+mult$cnt	equ	multcnt
+mult$iof	equ	multiof
+parse$pw	equ	parsepw
+phy$msk	equ	phymsk
+rd$dir	equ	rddir
+reset37x	equ	reset$37x
+save$pos	equ	SAVEPOS
+search$n	equ	searchn
+seek$dir	equ	seekdir
+set$lret1	equ	setlret1
+testvector	equ	test$vector
+user0pass	equ	user0$pass
+set$alloc$bit	equ	setallocbit
+search$loop	equ	searchloop
+delete$10	equ	delete10
+setenddir	equ	set$end$dir
+read$n0	equ	readn0
+do$new$line	equ	do$newline
+out$delim	equ	outdelim
+; dirbios4 (BDOS30.ASM, funcion 50 "Direct BIOS call", rara vez usada):
+; falta directamente en la fuente -- solo existen dir$bios1/2/3. Por la
+; logica del salto (cpi 9 / jnz dir$bios2 -- si es igual, cae directo
+; aqui), lo mas razonable es que apunte a dir$bios2; sin verificar contra
+; hardware real, es una funcion de muy bajo uso.
+dirbios4	equ	dir$bios2
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 	@LCOPY
 	@BDATE
