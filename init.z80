@@ -61,9 +61,15 @@ CMD_fullpaging equ 01Dh        ; 29
             ; @MXTPA: "top of user TPA", pero tambien la direccion real
             ; de entrada a la BDOS -- set$jumps (BIOSKRNL.ASM) la lee
             ; para montar el vector de la direccion 5 ("call 5") en
-            ; cada arranque/entrada a la CCP. "bdos" es la entrada real
-            ; de RESBDOS.ASM (bdos_full.z80/system.z80).
-            ld   hl, bdos
+            ; cada arranque/entrada a la CCP. NO apunta directamente a
+            ; "bdos" (RESBDOS.ASM, memoria de sistema): confirmado en
+            ; hardware que un programa de usuario haciendo "call 5"
+            ; llega ahi con "usuario" TODAVIA activo (nadie cambio de
+            ; banco aun en ese momento) -- mismo bug que boot$1/
+            ; ldccp_real, aqui en el punto mas fundamental de todos.
+            ; call5_entry (banco 7, ver mas abajo) hace el cambio a
+            ; sistema primero.
+            ld   hl, call5_entry
             ld   (@MXTPA), hl
 
             ld   a, FONT_I
@@ -140,22 +146,6 @@ in_copy_font:
                                  ; rato, igual que boot_cpm.asm/banktest.asm)
 
 ; ---------------------------------------------------------------------
-; ldccp_real - cuerpo real del STUB (todavia no hay CCP3.ASM ensamblado:
-; imprime un mensaje y se queda parado, nunca vuelve). Llamado desde
-; ?ldccp/?rlccp en bank.z80 (zona duplicada) -- boot$1 en BIOSKRNL.ASM
-; hace "call ?ldccp" DIRECTAMENTE, sin pasar por la tabla de saltos, y
-; en ese punto ya esta seleccionado "usuario" (set$jumps corre justo
-; antes, es el diseno correcto de DRI: la CCP se carga en el TPA del
-; usuario) -- por eso ?ldccp/?rlccp tienen que vivir duplicados igual
-; que el resto de la tabla, no aqui. Sustituir por la carga real de la
-; CCP en cuanto CCP3.ASM este listo (ahi si hara falta volver a
-; "sistema" para el acceso a disco, con bnksel, antes de copiar a TPA).
-; ---------------------------------------------------------------------
-ldccp_real: ld   hl, noccp_msg
-            call ?pmsg
-in_hang:    jp   in_hang
-
-; ---------------------------------------------------------------------
 ; in_mcu_send - protocolo MCU de bajo nivel (igual que en banktest.asm)
 ; ---------------------------------------------------------------------
 in_mcu_send:
@@ -220,3 +210,123 @@ ica_col:    ld   (hl), a
 ; estos mensajes.
 signon_msg: defb 46,51,46,57,0        ; "INIT"
 noccp_msg:  defb 51,52,40,40,53,0     ; "NOCCP"
+
+; =======================================================================
+;  ldccp_real - banco 7 ($F400, hueco libre justo detras de xofflist,
+;  que termina en $F3D8 -- ver bank.z80). Bug real encontrado en
+;  hardware con trazado paso a paso: esta rutina cambia de contexto
+;  (sistema/usuario) VARIAS veces DURANTE su propia ejecucion (igual
+;  que boot$1/set$jumps/bnksel, ver bank.z80) -- viviendo en banco 4
+;  normal (donde estaba antes, junto al resto de ?init), en cuanto hace
+;  el primer "call bnksel" con A=1 (usuario), la propia direccion
+;  siguiente de esta rutina deja de tener nuestro codigo (la pagina de
+;  usuario nunca lo tuvo cargado) -> ejecucion de basura (PC acababa
+;  leyendo $FF = RST 38h de la pagina de usuario, sin inicializar). El
+;  banco 7 no necesita duplicacion (a diferencia de $7E00-$7FFF): nunca
+;  lo toca "?bank", así que basta con vivir aqui, sin trucos.
+; =======================================================================
+
+            org  0F400h
+
+; ---------------------------------------------------------------------
+; ldccp_real - copia ccp$image (CCP3.ASM ya ensamblada, incrustada como
+; datos en ccp_image.z80, ver ahi) a la TPA de usuario ($100) y vuelve.
+; Llamado desde ?ldccp/?rlccp en bank.z80 (zona duplicada) -- boot$1 en
+; BIOSKRNL.ASM hace "call ?ldccp" DIRECTAMENTE, sin pasar por la tabla
+; de saltos; el propio ?ldccp (bank.z80: "xor a/call bnksel/jmp
+; ldccp_real") YA deja "sistema" activo antes de llegar aqui -- no
+; "usuario" (aunque asi estuviera justo antes, por set$jumps). Por eso
+; el primer OUT no hace falta -- ccp$image (banco 0-6 sistema) ya es
+; alcanzable de entrada.
+;
+; ccp$image esta en memoria de sistema (bancos 0-6), la TPA destino en
+; memoria de usuario -- nunca alcanzables a la vez, asi que cada bloque
+; de 128 B pasa por @bnkbf (banco 7, comun, ver diskio.z80/move.z80
+; para el mismo patron con disco RAM/SD). "bnksel" (no "?bank" a secas)
+; para mantener @cbnk sincronizado, igual que en toda la tabla de
+; saltos -- ver bank.z80.
+; ---------------------------------------------------------------------
+ldccp_real: ld   hl, ccp$image
+            ld   (ldc$src), hl
+            ld   hl, 0100h
+            ld   (ldc$dst), hl
+            ld   a, ccp$image$padlen/128
+            ld   (ldc$cnt), a
+
+ldc$loop:   ; sistema activo aqui (al entrar, y al final de cada vuelta)
+            ld   hl, (ldc$src)
+            ld   de, @bnkbf
+            ld   bc, 128
+            ldir
+            ld   hl, (ldc$src)
+            ld   de, 128
+            add  hl, de
+            ld   (ldc$src), hl
+
+            ld   a, 1
+            call bnksel          ; usuario activo
+
+            ld   hl, @bnkbf
+            ld   de, (ldc$dst)
+            ld   bc, 128
+            ldir
+            ld   hl, (ldc$dst)
+            ld   de, 128
+            add  hl, de
+            ld   (ldc$dst), hl
+
+            xor  a
+            call bnksel          ; sistema activo otra vez, para la
+                                 ; siguiente vuelta (o para el "ret" si
+                                 ; esta era la ultima -- boot$1 hace
+                                 ; "jmp ccp" justo despues, hace falta
+                                 ; "usuario" activo entonces)
+
+            ld   a, (ldc$cnt)
+            dec  a
+            ld   (ldc$cnt), a
+            jr   nz, ldc$loop
+
+            ld   a, 1
+            call bnksel          ; usuario activo para "jmp ccp"
+            ret
+
+; ---------------------------------------------------------------------
+; call5_entry - a esto apunta @MXTPA (arriba). Mismo patron que toda la
+; tabla de saltos de bank.z80: seleccionar sistema ANTES de saltar a la
+; rutina real ("bdos:", RESBDOS.ASM, memoria de sistema normal) -- un
+; programa de usuario haciendo "call 5" llega aqui con "usuario"
+; todavia activo (nadie ha cambiado de banco en ese punto).
+;
+; NOTA/pendiente: esto resuelve la ENTRADA. La vuelta a "usuario" antes
+; de que la BDOS devuelva el control al programa de usuario (necesaria
+; para que su propio "ret" final no se encuentre con el mismo problema
+; al reves) todavia no esta resuelta -- probablemente haga falta un
+; trampolin parecido en "goback" (RESBDOS.ASM, gestiona el retorno de
+; las funciones) o donde corresponda. Sin verificar en hardware todavia
+; -- ver memory_map.md.
+; ---------------------------------------------------------------------
+call5_entry:
+            xor  a
+            call bnksel          ; sistema activo
+            jmp  bdos
+
+; ---------------------------------------------------------------------
+; lstack - pila propia de la BDOS (RESBDOS.ASM hace "lxi sp,lstack" al
+; entrar en "bdos:"). Vivia en banco 5 (memoria de sistema normal,
+; $BC6B) -- cualquier cambio de contexto que ocurriera MIENTRAS SP
+; apuntaba ahi (p.ej. qconinx, que activa "usuario" un instante para
+; leer un byte del programa de usuario) corrompia lo que se leyera
+; despues de un push. Confirmado en hardware con trazado paso a paso.
+; Banco 7: mismo motivo que @bnkbf (SCB.ASM) -- siempre la misma
+; memoria fisica, pase lo que pase con ?bank.
+; ---------------------------------------------------------------------
+; ssize (RESBDOS.ASM) = 30, *2 = 60 -- valor literal aqui para no
+; redefinir "ssize" (ya existe en RESBDOS.ASM, aunque haya dejado de
+; usarse ahi) y evitar un "Mult. def."
+            ds   60
+lstack:
+
+ldc$src:    ds   2
+ldc$dst:    ds   2
+ldc$cnt:    ds   1

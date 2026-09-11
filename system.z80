@@ -83,4 +83,6 @@ bms_wait:   in   a,(0AFh)
 xdmaad		equ	xdmaadd
 srch$hash	equ	rb$search$hash
 
+            include "ccp_image.z80"
+
             end

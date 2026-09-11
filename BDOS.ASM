@@ -50,15 +50,20 @@ cr	equ	0dh	; carriage return
 lf	equ	0ah	; line feed
 ctl	equ	5eh	; up arrow
 
-; CPM3_SD81: $8800 (no $0000) -- tiene que quedar CONTIGUO con el resto
-; del XIOS ($6000 en adelante, el ultimo byte usado por init.z80 es
-; $87FE) para que "LOAD FAST SYSTEM.BIN CODE 24576" (un solo bloque
-; plano desde $6000) cargue tambien esto. $0000 rompia la carga: el
-; .cim pasaba a empezar en $0000, desplazando TODO el fichero $6000
-; bytes de mas una vez cargado en $6000 -- confirmado en hardware
-; (arranque completamente muerto, ni siquiera "INIT"). Cabe de sobra
-; en los bloques 4-5 (hasta ~$BC00), sin necesitar mc45_ext67.
-		org	08800h
+; CPM3_SD81: $8900 (no $0000) -- tiene que quedar CONTIGUO con el resto
+; del XIOS ($6000 en adelante) para que "LOAD FAST SYSTEM.BIN CODE
+; 24576" (un solo bloque plano desde $6000) cargue tambien esto. $0000
+; rompia la carga (desplazaba TODO el fichero $6000 bytes de mas,
+; arranque muerto). $8800 (primer intento) tambien fallo: colisionaba
+; con "in_mcu_send" de init.z80 (ambos resolvian a $8807) porque
+; calcule el final del XIOS con una direccion vieja, de antes de
+; reescribir ldccp_real (crecio con el bucle de copia de la CCP) --
+; confirmado en hardware con un trazado paso a paso: en vez de
+; ejecutar in_mcu_send, saltaba a "bdose"/"bdose2" (BDOS.ASM). El
+; final real del XIOS es "noccp_msg" en $8848 (+6 = $884E) -- $8900 dej
+; margen de sobra. Cabe en los bloques 4-5 (hasta ~$BD00), sin
+; necesitar mc45_ext67.
+		org	08900h
 base		equ	$
 
 ; CPM3_SD81: bnkbdos$pg/resbdos$pg/bios$pg (offsets relativos a "base")

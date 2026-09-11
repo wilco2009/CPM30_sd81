@@ -875,8 +875,16 @@ commonfcb:
 common$dma:
         ds	220	;function 10 buffer cont.
 
-	ds	ssize*2
-lstack:
+; CPM3_SD81: "ds ssize*2 / lstack:" (la pila propia de la BDOS, que
+; "bdos:" activa con "lxi sp,lstack" nada mas entrar) se movio al banco
+; 7 (init.z80, junto a ldccp_real/call5_entry) -- viviendo aqui, en
+; memoria de sistema normal, cualquier cambio de contexto que ocurra
+; MIENTRAS SP apunta aqui (p.ej. qconinx, que activa "usuario" un
+; instante para leer un byte del programa de usuario) corrompe lo que
+; se lea despues de un push, aunque el propio banco 3 (donde vive el
+; codigo) no cambie -- confirmado en hardware con un trazado paso a
+; paso (RET final de la BDOS sacando una direccion de vuelta que era
+; basura). Common (@bnkbf tiene el mismo motivo para estar ahi).
 rb$entsp:	ds	2
 
 ; BIOS intercept vector

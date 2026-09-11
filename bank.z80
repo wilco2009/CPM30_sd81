@@ -34,6 +34,30 @@
             include "memmap.inc"
 
 ; ---------------------------------------------------------------------
+;  bank$savesp/bank$stack -- pila temporal de ?bank (ver la nota junto
+;  a ?bank, mas abajo). Declarado AQUI (banco 7, $F600) y no al final
+;  del fichero a proposito -- referenciado hacia delante desde ?bank
+;  desestabilizaba el ensamblado en varias pasadas (mismo sintoma que
+;  el "bdose2" de BDOS.ASM: nada relacionado a simple vista dejaba de
+;  funcionar -- aqui, ni siquiera se llegaba a entrar en ?bank).
+;  "org 062E9h" al final para retomar la secuencia normal del fichero
+;  (dup_switcher etc.) exactamente donde continuaria si este bloque no
+;  existiera -- direccion confirmada en el .lst de antes de este bug.
+; ---------------------------------------------------------------------
+            org  0F600h
+
+bank$retaddr: ds 2               ; direccion de retorno real del
+                                  ; llamante, leida antes de reprogramar
+                                  ; nada (ver la nota junto a ?bank)
+bank$savesp: ds  2
+            ds   16              ; 8 niveles de push -- de sobra (?bank
+                                  ; solo usa 4: af/bc/de + el bc interno
+                                  ; del bucle)
+bank$stack:
+
+            org  062E9h
+
+; ---------------------------------------------------------------------
 ;  Tabla de saltos del BIOS -- movida aqui desde BIOSKRNL.ASM (ver la
 ;  nota en ese fichero). Duplicada al final del banco 3 junto con
 ;  ?bank/map1blk porque programas de usuario reales llaman a estas
@@ -114,8 +138,40 @@ map1blk:    push bc
 ; Llamado por BIOSKRNL.ASM via bnksel (salto de cola, no CALL) -- el
 ; "ret" de aqui es lo que devuelve el control al programa de usuario
 ; cuando A=1, ya con el banco 3 mostrando la pagina de usuario.
+;
+; Usa su PROPIA pila temporal (bank$stack, banco 7) mientras dura el
+; bucle, en vez de la del llamante. Dos bugs reales encontrados en
+; hardware con trazado paso a paso, relacionados pero distintos:
+;
+; 1) El propio "push bc" del bucle (guarda pagina y bloque mientras C
+;    se reutiliza para el puerto) caia, la mayoria de las veces, en la
+;    pila DEL LLAMANTE -- que puede estar en CUALQUIERA de los bloques
+;    0-6 que este mismo bucle esta reprogramando (p.ej. la pila de la
+;    propia CCP, en la TPA de usuario, bloque 0). Arreglado con
+;    bank$stack (ver mas abajo).
+;
+; 2) MAS SUTIL, y el que quedaba: aunque ?bank ya no ESCRIBE en la pila
+;    del llamante, la propia DIRECCION DE RETORNO que el llamante dejo
+;    ahi (con su "call bnksel"/"call ?bank", ANTES de que este codigo
+;    se ejecute) tambien vive en uno de esos bloques 0-6 -- y en cuanto
+;    el bucle reprograma ESE bloque, esa direccion de retorno queda
+;    "tapada" por lo que haya en la pagina nueva. Un "ret" normal al
+;    final, por tanto, saca basura de ahi (confirmado en hardware:
+;    volvia a una direccion de un "call" completamente distinto, de
+;    mucho antes en la ejecucion). Solucion: leer esa direccion de
+;    retorno ("pop hl") ANTES de tocar nada (con la pagina buena
+;    todavia mapeada), guardarla en banco 7 (bank$retaddr), y saltar
+;    ahi directamente al final con "jp (hl)" -- sin depender de una
+;    pila que puede haber cambiado de pagina fisica bajo los pies.
 ; ---------------------------------------------------------------------
-?bank:      push af
+?bank:      pop  hl                  ; direccion de retorno real del
+                                     ; llamante -- leida YA, antes de
+                                     ; que el bucle reprograme el
+                                     ; bloque donde vive (ver nota 2)
+            ld   (bank$retaddr), hl
+            ld   (bank$savesp), sp
+            ld   sp, bank$stack
+            push af
             push bc
             push de
             or   a
@@ -139,7 +195,9 @@ bank_loop:  ld   a,d
             pop  de
             pop  bc
             pop  af
-            ret
+            ld   sp, (bank$savesp)
+            ld   hl, (bank$retaddr)
+            jp   (hl)
 
 ; ---------------------------------------------------------------------
 ;  Tabla de saltos del BIOS (duplicada -- ver la nota mas arriba, junto

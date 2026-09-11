@@ -982,3 +982,128 @@ ser `$8800`. Corregido en nuestra copia (`base + (...)`). Hay una
 segunda ocurrencia idéntica en la fuente original (línea 6240, con
 `-192` en vez de `-1`) que no llegó a nuestro `BDOS.ASM` — cae en una
 rama `if`/`else` que el preprocesado de condicionales dejó inactiva.
+
+## CCP corriendo de verdad: hito alcanzado, pero con un bug de fondo pendiente
+
+Sesión larga de depuración paso a paso (trazado con el debugger,
+puntos de control, breakpoints de escritura en el puerto `$E7`) que
+llevó `system.z80` desde "INITNOCCP" hasta la CCP real ejecutándose y
+llegando a la BDOS — con bugs reales encontrados y corregidos por el
+camino. Quedan documentados aquí en orden, porque cada uno solo se hizo
+visible al arreglar el anterior.
+
+### `ccp_image.z80`: el `.cim` de `CCP3.ASM` NO tiene relleno desde `$0000`
+
+Al incrustar los bytes de `CCP3.cim` (org `$100`) como tabla `db`, la
+primera versión asumía 256 B de relleno de ceros al principio (como
+`system.cim`, que sí empieza en `$6000` con todo lo de detrás relleno)
+y recortaba `data[0x100:]`. Comprobado con `xxd`: **`CCP3.cim` no tiene
+ese relleno** — el byte 0 del fichero YA es la dirección `$100`
+(`31 1C 0C` = `LXI SP,$0C1C`, la instrucción real de `start:`). El
+recorte quitaba los primeros 256 B REALES de la CCP. Confirmado en
+hardware: `"jmp ccp"` ejecutaba una `LXI SP` corrupta. Corregido usando
+el fichero completo sin recortar.
+
+### `?bank`: dos bugs de pila reales, no uno
+
+1. **El propio bucle de `?bank` usaba la pila del llamante.** `push
+   bc`/`pop bc` (para guardar página+bloque mientras `C` se reutiliza
+   para el puerto `$E7`) caía en la pila de quien llamó a `?bank` — que
+   puede estar en CUALQUIERA de los bloques 0-6 que el propio bucle
+   está reprogramando (p.ej. la pila de la CCP, en su TPA, bloque 0).
+   En cuanto el bucle reprograma ESE bloque, el contenido de la pila
+   cambia de página física bajo sus pies. Arreglado: `?bank` usa ahora
+   su propia pila temporal (`bank$stack`, banco 7, `$F600`) mientras
+   dura el bucle.
+
+2. **Más sutil — la propia dirección de retorno del llamante, no solo
+   los `push`/`pop` internos.** Aunque `?bank` ya no escribe en la pila
+   del llamante, la dirección de retorno que el llamante dejó ahí (con
+   su `call bnksel`/`call ?bank`, ANTES de que `?bank` se ejecute)
+   también vive en uno de esos bloques 0-6 — y un `ret` normal al final
+   la lee DESPUÉS de que el bucle haya reprogramado ese bloque, sacando
+   basura. Arreglado: `?bank` hace `pop hl` como PRIMERA instrucción
+   (lee la dirección de retorno mientras la página buena todavía está
+   mapeada), la guarda en `bank$retaddr` (banco 7), y al final hace
+   `ld hl,(bank$retaddr) / jp (hl)` en vez de `ret` — sin depender de
+   una pila que puede haber cambiado de página física entre medias.
+
+   **IMPORTANTE**: `bank$retaddr`/`bank$savesp` son variables ÚNICAS
+   (no una pila de ellas) — si `?bank` se llega a invocar de forma
+   verdaderamente reentrante (una llamada a `?bank` ocurre mientras
+   otra todavía no ha terminado de "salir"), la segunda pisaría los
+   datos de la primera. No debería pasar con el diseño actual (cada
+   llamada entra y sale limpiamente antes de que nada más pueda volver
+   a llamar a `?bank`), pero si aparecen síntomas parecidos a los de
+   abajo en un sitio nuevo, revisar esto primero.
+
+Con estos dos arreglos, `call5_entry` → `bnksel` → `?bank` → `bdos:`
+(RESBDOS.ASM) ya funciona: se confirmó en hardware que `bdos:` activa
+`lstack` correctamente (`SP=$F497`) y el primer nivel de despacho
+funciona.
+
+### PENDIENTE (para retomar mañana) — `entsp`/`goback`/`retmon`: restaurar `SP` bajo el contexto equivocado
+
+Symptom confirmado en hardware con trazado paso a paso: tras bastante
+procesamiento real de la BDOS (dispatch, `bank$bdos`, `?move`, copias
+de buffer...), la ejecución acaba desviándose a la tabla de fuentes
+(banco 7, `$FDxx`-`$FExx`) ejecutada como si fuera código, y de ahí a
+una zona de la propia CCP con contenido que no es código real —
+eventualmente un `RST 38` cae en el gestor de errores de la ROM del
+ZX81 (con interrupciones REACTIVADAS, algo que nosotros nunca hacemos
+-- confirma que en ese punto ya no estamos ejecutando nada nuestro).
+
+**Mecanismo identificado** (no arreglado todavía): tanto `BDOS.ASM`
+(`goback`/`retmon`, con la variable `entsp`) como `RESBDOS.ASM`
+(`rb$goback`, con `rb$entsp`) usan el patrón:
+```
+; al ENTRAR en la funcion (con un contexto X activo):
+dad sp
+shld entsp          ; guarda el SP actual (numero, no lo que hay debajo)
+lxi sp,lstack       ; cambia a pila propia para procesar
+...
+; al SALIR (much mas tarde):
+lhld entsp
+sphl                ; restaura ESE MISMO NUMERO como SP
+...
+ret                 ; y vuelve usando esa pila "restaurada"
+```
+Esto es exactamente correcto SI el contexto (sistema/usuario) sigue
+siendo el mismo en el momento de restaurar que en el momento de
+guardar. En nuestro sistema banked NO tiene por qué serlo: en concreto,
+`bank$bdos` (RESBDOS.ASM) cambia a "usuario" el ÉL MISMO, con un salto
+de cola (`mvi a,1 / jmp selmemf`, no un `call`+`ret`), ANTES de que el
+control vuelva al punto desde donde se guardó `entsp`. El número
+guardado en `entsp` (p.ej. `$0C18`) es la dirección REAL de la pila de
+la CCP en usuario -- pero si en el momento en que `goback`/`retmon` lo
+restauran el contexto activo NO es el mismo que cuando se guardó (por
+ejemplo, seguimos en "sistema" porque el cambio de `bank$bdos` fue mas
+alla en la cadena de llamadas de lo esperado, o al reves), esa misma
+direccion numerica apunta a una pagina fisica distinta -- y lo que se
+lee ahi (para el `ret` final) es basura.
+
+Confirmado en la traza real: `?bank` (con el arreglo de `pop hl` ya
+puesto) hace su propio `pop hl` nada mas entrar y saca `$FD12` --
+significa que ese valor YA estaba mal puesto en la pila (en `$0C1A`,
+dentro del rango de `rb$entsp`) ANTES de que `?bank` se ejecutara --
+justo la vuelta de `rb$goback` que precede a esa llamada.
+
+**Para retomar mañana**: hace falta trazar con cuidado, para la
+secuencia real de esta sesión (función 49, `scbf`), en qué momento
+exacto cambia el contexto sistema/usuario respecto a cuándo se
+guarda/restaura cada `entsp` -- lo más probable es que la solución
+pase por:
+- Anadir contabilidad explicita del contexto (que `entsp`/`rb$entsp`
+  vayan acompañados de "en qué contexto se guardó esto", y que
+  `goback`/`retmon` reactiven ESE contexto antes de usar `sphl`/`ret`,
+  no asuman que ya es el correcto), o
+- Revisar si `bank$bdos` deberia volver a whoever lo llamo (con un
+  `call`+`ret` en vez de salto de cola) para que el cambio a "usuario"
+  ocurra en un punto mas controlado, mas cerca de la salida real de
+  `bdos:` (justo antes de su `ret` final a la CCP), en vez de en medio
+  de la cadena de despacho.
+
+Sesión de hoy en general: gran avance (CCP cargando y ejecutando de
+verdad, BDOS alcanzada y procesando), con varios bugs reales de
+paginación/pila encontrados y corregidos por el camino -- este último
+es el que queda para la próxima sesión.
