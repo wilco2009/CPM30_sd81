@@ -1,0 +1,278 @@
+; =====================================================================
+;  font_image.z80 - tabla de fuentes de 256 caracteres, banco 7
+;  ($F800-$FFFF). GENERADO por genfont.py -- no editar a mano.
+;
+;  Origen de cada glifo:
+;    $21-$7F  FONT.BIN   ASCII imprimible, redibujado a 7 pixeles de
+;                        ancho (la columna derecha queda libre como
+;                        separacion entre caracteres).
+;    resto    font_atlas_16x16.png   CP437 completo.
+;
+;  La posicion de la tabla la fija el registro I (FONT_I=$F8, init.z80)
+;  y el modo de 256 caracteres la usa entera, alineada a 2 KB:
+;  direccion = {ROMTABLE[15:11], codigo[7:0], linea[2:0]} (SD81.v:1089).
+;
+;  IMPORTANTE -- los codigos $80-$FF estan guardados INVERTIDOS. El
+;  hardware complementa los 8 pixeles cuando el codigo lleva el bit 7 a
+;  1 (video inverso clasico del ZX81, conservado tambien en modo 256
+;  caracteres: "if (char_latch_fast[7] && !sfSP_en && !sfHR_en)
+;  shift_register <= ~v_dout", SD81.v:1559), asi que hay que
+;  precomplementarlos para que salgan bien. Por eso esa mitad de la
+;  tabla se ve llena de $FF.
+;
+;  Se ensambla directamente en su sitio: el .cim es plano y se carga
+;  desde $6000, asi que el cargador deja la fuente ya puesta y no hace
+;  falta copiarla en ?init.
+;
+;  OJO -- la tabla EMPIEZA en el codigo 16 ($F880), no en el 0. Los 128
+;  primeros bytes ($F800-$F87F) son los glifos de los codigos 0-15, que
+;  no son imprimibles nunca (?co los filtra con "cp 20h / ret c", y la
+;  pantalla se borra con el 32), asi que ese hueco se reutiliza como
+;  @bnkbf, el buffer de 128 bytes del BIOS bancado (ver SCB.ASM). La
+;  base de la tabla que ve el hardware sigue siendo $F800: la fija el
+;  registro I y el modo de 256 caracteres exige alineacion a 2 KB.
+; =====================================================================
+
+            org  0F880h
+
+            defb 060h,070h,078h,07Ch,078h,070h,060h,000h   ; $10 ► [atlas]
+            defb 00Ch,01Ch,03Ch,07Ch,03Ch,01Ch,00Ch,000h   ; $11 ◄ [atlas]
+            defb 030h,078h,0FCh,030h,0FCh,078h,030h,000h   ; $12 ↕ [atlas]
+            defb 06Ch,06Ch,06Ch,06Ch,000h,06Ch,06Ch,000h   ; $13 ‼ [atlas]
+            defb 07Eh,0D4h,0D4h,0D4h,074h,014h,014h,000h   ; $14 ¶ [atlas]
+            defb 03Eh,060h,07Ch,066h,03Eh,006h,07Ch,000h   ; $15 § [atlas]
+            defb 000h,000h,0FEh,0FEh,0FEh,000h,000h,000h   ; $16 ▬ [atlas]
+            defb 018h,07Eh,018h,07Eh,018h,000h,07Eh,000h   ; $17 ↨ [atlas]
+            defb 018h,03Ch,07Eh,018h,018h,018h,018h,000h   ; $18 ↑ [atlas]
+            defb 018h,018h,018h,018h,07Eh,03Ch,018h,000h   ; $19 ↓ [atlas]
+            defb 008h,00Ch,0FEh,0FEh,00Ch,008h,000h,000h   ; $1A → [atlas]
+            defb 020h,060h,0FEh,0FEh,060h,020h,000h,000h   ; $1B ← [atlas]
+            defb 000h,000h,0C0h,0C0h,0C0h,0FCh,000h,000h   ; $1C ∟ [atlas]
+            defb 000h,028h,06Ch,0FEh,06Ch,028h,000h,000h   ; $1D ↔ [atlas]
+            defb 000h,010h,038h,07Ch,0FEh,0FEh,000h,000h   ; $1E ▲ [atlas]
+            defb 000h,0FEh,0FEh,07Ch,038h,010h,000h,000h   ; $1F ▼ [atlas]
+            defb 000h,000h,000h,000h,000h,000h,000h,000h   ; $20 espacio [atlas]
+            defb 000h,010h,010h,010h,010h,000h,010h,000h   ; $21 ! [FONT.BIN]
+            defb 000h,024h,024h,000h,000h,000h,000h,000h   ; $22 " [FONT.BIN]
+            defb 000h,028h,07Ch,028h,028h,07Ch,028h,000h   ; $23 # [FONT.BIN]
+            defb 000h,010h,07Ch,050h,07Ch,014h,07Ch,010h   ; $24 $ [FONT.BIN]
+            defb 000h,060h,064h,008h,010h,02Ch,04Ch,000h   ; $25 % [FONT.BIN]
+            defb 000h,020h,050h,020h,054h,048h,034h,000h   ; $26 & [FONT.BIN]
+            defb 000h,008h,010h,000h,000h,000h,000h,000h   ; $27 ' [FONT.BIN]
+            defb 000h,004h,008h,008h,008h,008h,004h,000h   ; $28 ( [FONT.BIN]
+            defb 000h,020h,010h,010h,010h,010h,020h,000h   ; $29 ) [FONT.BIN]
+            defb 000h,000h,028h,010h,07Ch,010h,028h,000h   ; $2A * [FONT.BIN]
+            defb 000h,000h,010h,010h,07Ch,010h,010h,000h   ; $2B + [FONT.BIN]
+            defb 000h,000h,000h,000h,000h,008h,008h,010h   ; $2C , [FONT.BIN]
+            defb 000h,000h,000h,000h,07Ch,000h,000h,000h   ; $2D - [FONT.BIN]
+            defb 000h,000h,000h,000h,000h,018h,018h,000h   ; $2E . [FONT.BIN]
+            defb 000h,000h,004h,008h,010h,020h,040h,000h   ; $2F / [FONT.BIN]
+            defb 000h,03Ch,046h,04Ah,052h,062h,03Ch,000h   ; $30 0 [FONT.BIN]
+            defb 000h,008h,018h,008h,008h,008h,01Ch,000h   ; $31 1 [FONT.BIN]
+            defb 000h,038h,044h,004h,038h,040h,07Ch,000h   ; $32 2 [FONT.BIN]
+            defb 000h,038h,044h,018h,004h,044h,038h,000h   ; $33 3 [FONT.BIN]
+            defb 000h,008h,018h,028h,048h,07Ch,008h,000h   ; $34 4 [FONT.BIN]
+            defb 000h,07Ch,040h,078h,004h,044h,038h,000h   ; $35 5 [FONT.BIN]
+            defb 000h,038h,040h,078h,044h,044h,038h,000h   ; $36 6 [FONT.BIN]
+            defb 000h,07Ch,004h,008h,010h,020h,020h,000h   ; $37 7 [FONT.BIN]
+            defb 000h,038h,044h,038h,044h,044h,038h,000h   ; $38 8 [FONT.BIN]
+            defb 000h,038h,044h,044h,03Ch,004h,038h,000h   ; $39 9 [FONT.BIN]
+            defb 000h,000h,000h,010h,000h,000h,010h,000h   ; $3A : [FONT.BIN]
+            defb 000h,000h,010h,000h,000h,010h,010h,020h   ; $3B ; [FONT.BIN]
+            defb 000h,000h,004h,008h,010h,008h,004h,000h   ; $3C < [FONT.BIN]
+            defb 000h,000h,000h,07Ch,000h,07Ch,000h,000h   ; $3D = [FONT.BIN]
+            defb 000h,000h,010h,008h,004h,008h,010h,000h   ; $3E > [FONT.BIN]
+            defb 000h,038h,044h,008h,010h,000h,010h,000h   ; $3F ? [FONT.BIN]
+            defb 000h,03Ch,04Ah,052h,05Eh,040h,03Ch,000h   ; $40 @ [FONT.BIN]
+            defb 000h,038h,044h,044h,07Ch,044h,044h,000h   ; $41 A [FONT.BIN]
+            defb 000h,078h,044h,078h,044h,044h,078h,000h   ; $42 B [FONT.BIN]
+            defb 000h,038h,044h,040h,040h,044h,038h,000h   ; $43 C [FONT.BIN]
+            defb 000h,070h,048h,044h,044h,048h,070h,000h   ; $44 D [FONT.BIN]
+            defb 000h,07Ch,040h,078h,040h,040h,07Ch,000h   ; $45 E [FONT.BIN]
+            defb 000h,07Ch,040h,078h,040h,040h,040h,000h   ; $46 F [FONT.BIN]
+            defb 000h,038h,044h,040h,05Ch,044h,038h,000h   ; $47 G [FONT.BIN]
+            defb 000h,044h,044h,07Ch,044h,044h,044h,000h   ; $48 H [FONT.BIN]
+            defb 000h,07Ch,010h,010h,010h,010h,07Ch,000h   ; $49 I [FONT.BIN]
+            defb 000h,004h,004h,004h,044h,044h,038h,000h   ; $4A J [FONT.BIN]
+            defb 000h,048h,050h,060h,050h,048h,044h,000h   ; $4B K [FONT.BIN]
+            defb 000h,040h,040h,040h,040h,040h,07Ch,000h   ; $4C L [FONT.BIN]
+            defb 000h,044h,06Ch,054h,044h,044h,044h,000h   ; $4D M [FONT.BIN]
+            defb 000h,042h,062h,052h,04Ah,046h,042h,000h   ; $4E N [FONT.BIN]
+            defb 000h,03Ch,042h,042h,042h,042h,03Ch,000h   ; $4F O [FONT.BIN]
+            defb 000h,078h,044h,044h,078h,040h,040h,000h   ; $50 P [FONT.BIN]
+            defb 000h,038h,044h,044h,044h,054h,038h,004h   ; $51 Q [FONT.BIN]
+            defb 000h,078h,044h,044h,078h,048h,044h,000h   ; $52 R [FONT.BIN]
+            defb 000h,038h,040h,038h,004h,044h,038h,000h   ; $53 S [FONT.BIN]
+            defb 000h,07Ch,010h,010h,010h,010h,010h,000h   ; $54 T [FONT.BIN]
+            defb 000h,044h,044h,044h,044h,044h,038h,000h   ; $55 U [FONT.BIN]
+            defb 000h,044h,044h,044h,044h,028h,010h,000h   ; $56 V [FONT.BIN]
+            defb 000h,044h,044h,044h,044h,054h,028h,000h   ; $57 W [FONT.BIN]
+            defb 000h,044h,028h,010h,010h,028h,044h,000h   ; $58 X [FONT.BIN]
+            defb 000h,044h,028h,010h,010h,010h,010h,000h   ; $59 Y [FONT.BIN]
+            defb 000h,07Ch,004h,008h,010h,020h,07Ch,000h   ; $5A Z [FONT.BIN]
+            defb 000h,01Ch,010h,010h,010h,010h,01Ch,000h   ; $5B [ [FONT.BIN]
+            defb 000h,000h,040h,020h,010h,008h,004h,000h   ; $5C \ [FONT.BIN]
+            defb 000h,070h,010h,010h,010h,010h,070h,000h   ; $5D ] [FONT.BIN]
+            defb 000h,010h,038h,054h,010h,010h,010h,000h   ; $5E ^ [FONT.BIN]
+            defb 000h,000h,000h,000h,000h,000h,000h,0FEh   ; $5F _ [FONT.BIN]
+            defb 000h,018h,024h,070h,020h,020h,07Ch,000h   ; $60 ` [FONT.BIN]
+            defb 000h,000h,038h,004h,03Ch,044h,03Ch,000h   ; $61 a [FONT.BIN]
+            defb 000h,020h,020h,03Ch,022h,022h,03Ch,000h   ; $62 b [FONT.BIN]
+            defb 000h,000h,01Ch,020h,020h,020h,01Ch,000h   ; $63 c [FONT.BIN]
+            defb 000h,004h,004h,03Ch,044h,044h,03Ch,000h   ; $64 d [FONT.BIN]
+            defb 000h,000h,038h,044h,078h,040h,03Ch,000h   ; $65 e [FONT.BIN]
+            defb 000h,00Ch,010h,018h,010h,010h,010h,000h   ; $66 f [FONT.BIN]
+            defb 000h,000h,03Ch,044h,044h,03Ch,004h,038h   ; $67 g [FONT.BIN]
+            defb 000h,040h,040h,078h,044h,044h,044h,000h   ; $68 h [FONT.BIN]
+            defb 000h,010h,000h,030h,010h,010h,038h,000h   ; $69 i [FONT.BIN]
+            defb 000h,004h,000h,004h,004h,004h,024h,018h   ; $6A j [FONT.BIN]
+            defb 000h,020h,028h,030h,030h,028h,024h,000h   ; $6B k [FONT.BIN]
+            defb 000h,010h,010h,010h,010h,010h,00Ch,000h   ; $6C l [FONT.BIN]
+            defb 000h,000h,068h,054h,054h,054h,054h,000h   ; $6D m [FONT.BIN]
+            defb 000h,000h,078h,044h,044h,044h,044h,000h   ; $6E n [FONT.BIN]
+            defb 000h,000h,038h,044h,044h,044h,038h,000h   ; $6F o [FONT.BIN]
+            defb 000h,000h,078h,044h,044h,078h,040h,040h   ; $70 p [FONT.BIN]
+            defb 000h,000h,03Ch,044h,044h,03Ch,004h,006h   ; $71 q [FONT.BIN]
+            defb 000h,000h,01Ch,020h,020h,020h,020h,000h   ; $72 r [FONT.BIN]
+            defb 000h,000h,038h,040h,038h,004h,078h,000h   ; $73 s [FONT.BIN]
+            defb 000h,010h,038h,010h,010h,010h,00Ch,000h   ; $74 t [FONT.BIN]
+            defb 000h,000h,044h,044h,044h,044h,038h,000h   ; $75 u [FONT.BIN]
+            defb 000h,000h,044h,044h,028h,028h,010h,000h   ; $76 v [FONT.BIN]
+            defb 000h,000h,044h,054h,054h,054h,028h,000h   ; $77 w [FONT.BIN]
+            defb 000h,000h,044h,028h,010h,028h,044h,000h   ; $78 x [FONT.BIN]
+            defb 000h,000h,044h,044h,044h,03Ch,004h,038h   ; $79 y [FONT.BIN]
+            defb 000h,000h,07Ch,008h,010h,020h,07Ch,000h   ; $7A z [FONT.BIN]
+            defb 000h,01Ch,010h,060h,010h,010h,01Ch,000h   ; $7B { [FONT.BIN]
+            defb 000h,008h,008h,008h,008h,008h,008h,000h   ; $7C | [FONT.BIN]
+            defb 000h,070h,010h,00Ch,010h,010h,070h,000h   ; $7D } [FONT.BIN]
+            defb 000h,014h,028h,000h,000h,000h,000h,000h   ; $7E ~ [FONT.BIN]
+            defb 03Ch,042h,098h,0A0h,0A0h,098h,042h,03Ch   ; $7F ⌂ [FONT.BIN]
+            defb 083h,03Fh,039h,083h,0E7h,0F3h,087h,0FFh   ; $80 Ç [atlas] INV
+            defb 093h,0FFh,033h,033h,033h,033h,089h,0FFh   ; $81 ü [atlas] INV
+            defb 0F3h,0E7h,0C3h,099h,081h,09Fh,0C1h,0FFh   ; $82 é [atlas] INV
+            defb 0FFh,0BBh,087h,0F3h,083h,033h,089h,0C7h   ; $83 â [atlas] INV
+            defb 093h,0FFh,087h,0F3h,083h,033h,089h,0FFh   ; $84 ä [atlas] INV
+            defb 0CFh,0E7h,087h,0F3h,083h,033h,089h,0FFh   ; $85 à [atlas] INV
+            defb 0FFh,0BBh,087h,0F3h,083h,033h,089h,0C7h   ; $86 å [atlas] INV
+            defb 087h,03Fh,033h,087h,0E7h,0F3h,087h,0FFh   ; $87 ç [atlas] INV
+            defb 0FFh,0DDh,0C3h,099h,081h,09Fh,0C1h,0FFh   ; $88 ê [atlas] INV
+            defb 0C9h,0FFh,0C3h,099h,081h,09Fh,0C1h,0FFh   ; $89 ë [atlas] INV
+            defb 0E7h,0F3h,0C3h,099h,081h,09Fh,0C1h,0FFh   ; $8A è [atlas] INV
+            defb 0C9h,0FFh,0C7h,0E7h,0E7h,0E7h,0C3h,0FFh   ; $8B ï [atlas] INV
+            defb 0FFh,0BBh,0C7h,0E7h,0E7h,0E7h,0C3h,0FFh   ; $8C î [atlas] INV
+            defb 0CFh,0E7h,0C7h,0E7h,0E7h,0E7h,0C3h,0FFh   ; $8D ì [atlas] INV
+            defb 093h,0FFh,0C7h,093h,039h,001h,039h,0FFh   ; $8E Ä [atlas] INV
+            defb 0FFh,0BBh,0C7h,093h,039h,001h,039h,0FFh   ; $8F Å [atlas] INV
+            defb 0F3h,0E7h,081h,09Fh,083h,09Fh,081h,0FFh   ; $90 É [atlas] INV
+            defb 0FFh,0FFh,013h,0C5h,081h,047h,011h,0FFh   ; $91 æ [atlas] INV
+            defb 0C1h,087h,027h,021h,007h,027h,021h,0FFh   ; $92 Æ [atlas] INV
+            defb 0FFh,0BBh,0C3h,099h,099h,099h,0C3h,0E7h   ; $93 ô [atlas] INV
+            defb 093h,0FFh,0C3h,099h,099h,099h,0C3h,09Dh   ; $94 ö [atlas] INV
+            defb 0CFh,0E7h,0C3h,099h,099h,099h,0C3h,09Dh   ; $95 ò [atlas] INV
+            defb 0FFh,0BBh,0FFh,033h,033h,033h,089h,0FFh   ; $96 û [atlas] INV
+            defb 0CFh,0E7h,0FFh,033h,033h,033h,089h,0FFh   ; $97 ù [atlas] INV
+            defb 093h,0FFh,039h,093h,0C7h,0CFh,01Fh,0FFh   ; $98 ÿ [atlas] INV
+            defb 0C9h,0FFh,0C3h,099h,099h,099h,0C3h,0FFh   ; $99 Ö [atlas] INV
+            defb 099h,0FFh,099h,099h,099h,099h,0C3h,0FFh   ; $9A Ü [atlas] INV
+            defb 0F9h,083h,031h,02Fh,019h,083h,03Fh,0FFh   ; $9B ¢ [atlas] INV
+            defb 0E3h,0CFh,001h,0CFh,08Fh,049h,013h,0FFh   ; $9C £ [atlas] INV
+            defb 099h,099h,0C3h,081h,0E7h,081h,0E7h,0FFh   ; $9D ¥ [atlas] INV
+            defb 007h,033h,033h,007h,031h,003h,031h,0FFh   ; $9E ₧ [atlas] INV
+            defb 0F1h,0E5h,0E7h,081h,0E7h,027h,08Fh,0FFh   ; $9F ƒ [atlas] INV
+            defb 0E7h,0CFh,087h,0F3h,083h,033h,089h,0FFh   ; $A0 á [atlas] INV
+            defb 0E7h,0CFh,0C7h,0E7h,0E7h,0E7h,0C3h,0FFh   ; $A1 í [atlas] INV
+            defb 0F3h,0E7h,0C3h,099h,099h,099h,0C3h,0FFh   ; $A2 ó [atlas] INV
+            defb 0CFh,0FFh,033h,033h,033h,033h,089h,0FFh   ; $A3 ú [atlas] INV
+            defb 0FFh,063h,0FFh,047h,033h,033h,033h,0FFh   ; $A4 ñ [atlas] INV
+            defb 0FFh,063h,0FFh,033h,013h,023h,033h,0FFh   ; $A5 Ñ [atlas] INV
+            defb 007h,093h,033h,089h,0FFh,001h,0FFh,0FFh   ; $A6 ª [atlas] INV
+            defb 0C3h,099h,099h,0C3h,0FFh,081h,0FFh,0FFh   ; $A7 º [atlas] INV
+            defb 0CFh,0FFh,0CFh,0CFh,099h,099h,0C3h,0FFh   ; $A8 ¿ [atlas] INV
+            defb 0FFh,0FFh,081h,09Fh,09Fh,0FFh,0FFh,0FFh   ; $A9 ⌐ [atlas] INV
+            defb 0FFh,0FFh,003h,0F3h,0F3h,0FFh,0FFh,0FFh   ; $AA ¬ [atlas] INV
+            defb 039h,033h,027h,0C3h,099h,033h,061h,0FFh   ; $AB ½ [atlas] INV
+            defb 039h,033h,025h,0C9h,095h,031h,07Dh,0FFh   ; $AC ¼ [atlas] INV
+            defb 0E7h,0FFh,0E7h,0E7h,0C3h,0C3h,0E7h,0FFh   ; $AD ¡ [atlas] INV
+            defb 0FFh,0C9h,093h,027h,093h,0C9h,0FFh,0FFh   ; $AE « [atlas] INV
+            defb 0FFh,027h,093h,0C9h,093h,027h,0FFh,0FFh   ; $AF » [atlas] INV
+            defb 0DDh,077h,0DDh,077h,0DDh,077h,0DDh,077h   ; $B0 ░ [atlas] INV
+            defb 0AAh,055h,0AAh,055h,0AAh,055h,0AAh,055h   ; $B1 ▒ [atlas] INV
+            defb 024h,088h,024h,011h,024h,088h,024h,011h   ; $B2 ▓ [atlas] INV
+            defb 0E7h,0E7h,0E7h,0E7h,0E7h,0E7h,0E7h,0E7h   ; $B3 │ [atlas] INV
+            defb 0E7h,0E7h,0E7h,007h,0E7h,0E7h,0E7h,0E7h   ; $B4 ┤ [atlas] INV
+            defb 0E7h,0E7h,0E7h,007h,0E7h,007h,0E7h,0E7h   ; $B5 ╡ [atlas] INV
+            defb 0C9h,0C9h,0C9h,009h,0C9h,0C9h,0C9h,0C9h   ; $B6 ╢ [atlas] INV
+            defb 0FFh,0FFh,0FFh,001h,0C9h,0C9h,0C9h,0C9h   ; $B7 ╖ [atlas] INV
+            defb 0FFh,0FFh,0FFh,007h,0E7h,007h,0E7h,0E7h   ; $B8 ╕ [atlas] INV
+            defb 0C9h,0C9h,0C9h,009h,0F9h,009h,0C9h,0C9h   ; $B9 ╣ [atlas] INV
+            defb 0C9h,0C9h,0C9h,0C9h,0C9h,0C9h,0C9h,0C9h   ; $BA ║ [atlas] INV
+            defb 0FFh,0FFh,0FFh,001h,0F9h,009h,0C9h,0C9h   ; $BB ╗ [atlas] INV
+            defb 0C9h,0C9h,0C9h,009h,0F9h,001h,0FFh,0FFh   ; $BC ╝ [atlas] INV
+            defb 0C9h,0C9h,0C9h,001h,0FFh,0FFh,0FFh,0FFh   ; $BD ╜ [atlas] INV
+            defb 0E7h,0E7h,0E7h,007h,0E7h,007h,0FFh,0FFh   ; $BE ╛ [atlas] INV
+            defb 0FFh,0FFh,0FFh,007h,0E7h,0E7h,0E7h,0E7h   ; $BF ┐ [atlas] INV
+            defb 0E7h,0E7h,0E7h,0E0h,0FFh,0FFh,0FFh,0FFh   ; $C0 └ [atlas] INV
+            defb 0E7h,0E7h,0E7h,000h,0FFh,0FFh,0FFh,0FFh   ; $C1 ┴ [atlas] INV
+            defb 0FFh,0FFh,0FFh,000h,0E7h,0E7h,0E7h,0E7h   ; $C2 ┬ [atlas] INV
+            defb 0E7h,0E7h,0E7h,0E0h,0E7h,0E7h,0E7h,0E7h   ; $C3 ├ [atlas] INV
+            defb 0FFh,0FFh,0FFh,000h,0FFh,0FFh,0FFh,0FFh   ; $C4 ─ [atlas] INV
+            defb 0E7h,0E7h,0E7h,000h,0E7h,0E7h,0E7h,0E7h   ; $C5 ┼ [atlas] INV
+            defb 0E7h,0E7h,0E7h,0E0h,0E7h,0E0h,0E7h,0E7h   ; $C6 ╞ [atlas] INV
+            defb 0C9h,0C9h,0C9h,0C8h,0C9h,0C9h,0C9h,0C9h   ; $C7 ╟ [atlas] INV
+            defb 0C9h,0C9h,0C9h,0C8h,0CFh,0C0h,0FFh,0FFh   ; $C8 ╚ [atlas] INV
+            defb 0FFh,0FFh,0FFh,0C0h,0CFh,0C8h,0C9h,0C9h   ; $C9 ╔ [atlas] INV
+            defb 0C9h,0C9h,0C9h,008h,0FFh,000h,0FFh,0FFh   ; $CA ╩ [atlas] INV
+            defb 0FFh,0FFh,0FFh,000h,0FFh,008h,0C9h,0C9h   ; $CB ╦ [atlas] INV
+            defb 0C9h,0C9h,0C9h,0C8h,0CFh,0C8h,0C9h,0C9h   ; $CC ╠ [atlas] INV
+            defb 0FFh,0FFh,0FFh,000h,0FFh,000h,0FFh,0FFh   ; $CD ═ [atlas] INV
+            defb 0C9h,0C9h,0C9h,008h,0FFh,008h,0C9h,0C9h   ; $CE ╬ [atlas] INV
+            defb 0E7h,0E7h,0E7h,000h,0FFh,000h,0FFh,0FFh   ; $CF ╧ [atlas] INV
+            defb 0C9h,0C9h,0C9h,000h,0FFh,0FFh,0FFh,0FFh   ; $D0 ╨ [atlas] INV
+            defb 0FFh,0FFh,0FFh,000h,0FFh,000h,0E7h,0E7h   ; $D1 ╤ [atlas] INV
+            defb 0FFh,0FFh,0FFh,000h,0C9h,0C9h,0C9h,0C9h   ; $D2 ╥ [atlas] INV
+            defb 0C9h,0C9h,0C9h,0C0h,0FFh,0FFh,0FFh,0FFh   ; $D3 ╙ [atlas] INV
+            defb 0E7h,0E7h,0E7h,0E0h,0E7h,0E0h,0FFh,0FFh   ; $D4 ╘ [atlas] INV
+            defb 0FFh,0FFh,0FFh,0E0h,0E7h,0E0h,0E7h,0E7h   ; $D5 ╒ [atlas] INV
+            defb 0FFh,0FFh,0FFh,0C0h,0C9h,0C9h,0C9h,0C9h   ; $D6 ╓ [atlas] INV
+            defb 0C9h,0C9h,0C9h,000h,0C9h,0C9h,0C9h,0C9h   ; $D7 ╫ [atlas] INV
+            defb 0E7h,0E7h,0E7h,000h,0E7h,000h,0E7h,0E7h   ; $D8 ╪ [atlas] INV
+            defb 0E7h,0E7h,0E7h,007h,0FFh,0FFh,0FFh,0FFh   ; $D9 ┘ [atlas] INV
+            defb 0FFh,0FFh,0FFh,0E0h,0E7h,0E7h,0E7h,0E7h   ; $DA ┌ [atlas] INV
+            defb 000h,000h,000h,000h,000h,000h,000h,000h   ; $DB █ [atlas] INV
+            defb 0FFh,0FFh,0FFh,0FFh,000h,000h,000h,000h   ; $DC ▄ [atlas] INV
+            defb 00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh   ; $DD ▌ [atlas] INV
+            defb 0F0h,0F0h,0F0h,0F0h,0F0h,0F0h,0F0h,0F0h   ; $DE ▐ [atlas] INV
+            defb 000h,000h,000h,000h,0FFh,0FFh,0FFh,0FFh   ; $DF ▀ [atlas] INV
+            defb 0FFh,0FFh,089h,023h,027h,023h,089h,0FFh   ; $E0 α [atlas] INV
+            defb 0E3h,0C9h,0C9h,083h,099h,099h,023h,07Fh   ; $E1 ß [atlas] INV
+            defb 001h,099h,09Dh,09Fh,09Fh,09Fh,00Fh,0FFh   ; $E2 Γ [atlas] INV
+            defb 0FFh,081h,013h,093h,093h,0B3h,0B9h,0FFh   ; $E3 π [atlas] INV
+            defb 001h,09Dh,0CFh,0E7h,0CDh,099h,001h,0FFh   ; $E4 Σ [atlas] INV
+            defb 0FFh,0E1h,0C3h,099h,099h,099h,0C3h,0FFh   ; $E5 σ [atlas] INV
+            defb 0FFh,099h,099h,099h,099h,023h,07Fh,0FFh   ; $E6 µ [atlas] INV
+            defb 039h,013h,0C7h,0CFh,0CFh,0CFh,0CFh,0FFh   ; $E7 τ [atlas] INV
+            defb 081h,0E7h,0C3h,099h,0C3h,0E7h,081h,0FFh   ; $E8 Φ [atlas] INV
+            defb 0C7h,093h,039h,001h,039h,093h,0C7h,0FFh   ; $E9 Θ [atlas] INV
+            defb 083h,039h,039h,039h,093h,093h,011h,0FFh   ; $EA Ω [atlas] INV
+            defb 0E1h,0E7h,0C3h,099h,099h,099h,0C3h,0FFh   ; $EB δ [atlas] INV
+            defb 0FFh,083h,029h,029h,029h,083h,0FFh,0FFh   ; $EC ∞ [atlas] INV
+            defb 0F9h,083h,031h,029h,019h,083h,03Fh,0FFh   ; $ED φ [atlas] INV
+            defb 0C1h,09Fh,03Fh,001h,03Fh,09Fh,0C1h,0FFh   ; $EE ε [atlas] INV
+            defb 0FFh,083h,039h,039h,039h,039h,039h,0FFh   ; $EF ∩ [atlas] INV
+            defb 0FFh,081h,0FFh,081h,0FFh,081h,0FFh,0FFh   ; $F0 ≡ [atlas] INV
+            defb 0E7h,0E7h,081h,0E7h,0E7h,0FFh,081h,0FFh   ; $F1 ± [atlas] INV
+            defb 0CFh,0E7h,0F3h,0E7h,0CFh,0FFh,081h,0FFh   ; $F2 ≥ [atlas] INV
+            defb 0F3h,0E7h,0CFh,0E7h,0F3h,0FFh,081h,0FFh   ; $F3 ≤ [atlas] INV
+            defb 0F3h,0E1h,0E5h,0E7h,0E7h,0E7h,0E7h,0E7h   ; $F4 ⌠ [atlas] INV
+            defb 0E7h,0E7h,0E7h,0E7h,027h,087h,0CFh,0FFh   ; $F5 ⌡ [atlas] INV
+            defb 0E7h,0E7h,0FFh,081h,0FFh,0E7h,0E7h,0FFh   ; $F6 ÷ [atlas] INV
+            defb 0FFh,0C9h,093h,0FFh,0C9h,093h,0FFh,0FFh   ; $F7 ≈ [atlas] INV
+            defb 0E7h,0DBh,0DBh,0E7h,0FFh,0FFh,0FFh,0FFh   ; $F8 ° [atlas] INV
+            defb 0FFh,0E7h,0E7h,0FFh,0FFh,0FFh,0FFh,0FFh   ; $F9 ∙ [atlas] INV
+            defb 0FFh,0FFh,0FFh,0E7h,0FFh,0FFh,0FFh,0FFh   ; $FA · [atlas] INV
+            defb 0E1h,0E7h,0E7h,0E7h,027h,08Fh,0CFh,0FFh   ; $FB √ [atlas] INV
+            defb 083h,099h,099h,099h,099h,0FFh,0FFh,0FFh   ; $FC ⁿ [atlas] INV
+            defb 0C3h,099h,0F3h,0CFh,081h,0FFh,0FFh,0FFh   ; $FD ² [atlas] INV
+            defb 0FFh,0FFh,0C7h,0C7h,0C7h,0C7h,0FFh,0FFh   ; $FE ■ [atlas] INV
+            defb 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh   ; $FF espacio [atlas] INV
+

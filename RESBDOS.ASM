@@ -50,6 +50,43 @@ error$jmp 	equ	error
 sconoutf	equ	conoutf		; 31. escape sequence decoded conout
 screenf		equ	0ffffh		; 32. screen function
 
+; =====================================================================
+; CPM3_SD81: MODULO ENTERO EN MEMORIA COMUN (banco 7, $F040)
+;
+; Este fichero es, literalmente, lo que DRI titula "Resident Module"
+; (ver la cabecera de arriba): esta pensado por diseno para vivir en
+; memoria comun, y hasta ahora lo teniamos en memoria banked de sistema
+; ($B700-$BC59), que es la causa raiz del ultimo bug que quedaba.
+;
+; El motivo NO es exclusivo de este hardware -- es la misma condicion
+; que en cualquier CP/M+ bancado: hay codigo aqui que cambia de contexto
+; a mitad de su propia ejecucion y SIGUE ejecutando despues, asi que sus
+; propias instrucciones tienen que seguir estando donde estaban cuando
+; el contexto cambia. Casos confirmados leyendo el fuente:
+;
+;   - disk$function: "call bank$bdos" y todo el copiado de FCB/DMA de
+;     vuelta que viene DESPUES (bank$bdos acaba en "mvi a,1 / jmp
+;     selmemf", o sea vuelve al llamante con "usuario" ya activo).
+;   - parse: mismo patron (call bank$bdos y sigue).
+;   - rb$goback: restaura rb$entsp (el SP real de la CCP, que solo
+;     significa algo bajo "usuario") y hace ret.
+;   - qconinx / switch1: seleccionan "usuario" un instante para leer un
+;     byte del programa de usuario y vuelven -- con su propio codigo
+;     ejecutandose durante el cambio.
+;   - rb$func10 y rb$blk$out1: llaman a bank$bdos y continuan.
+;
+; Y los datos que se escriben bajo un contexto y se leen bajo el otro
+; (rb$aret, rb$entsp, commonfcb, common$dma -- estos dos ultimos con el
+; nombre que ya lo dice) tambien tienen que estar aqui por lo mismo.
+;
+; $F032: ver el mapa completo del banco 7 en memory_map.md. El sitio
+; salio de empaquetar SCB/ATTR/DFILE (estaban alineados a 2 KB sin
+; necesitarlo) y de sacar de comun las rutinas de impresion de
+; BIOSKRNL.ASM, que no lo necesitaban.
+; =====================================================================
+
+	org 0F032h
+
 rb$serial:	db	'654321'
 
 	jmp	bdos
@@ -521,6 +558,30 @@ rb$sta$ret:
 	sta rb$aret
 
 rb$goback:
+; CPM3_SD81: garantizar "usuario" antes de tocar nada del programa de
+; usuario. Este es el UNICO punto de salida de la BDOS residente, y a
+; partir de la linea siguiente todo lo que se toca es memoria suya: el
+; SP que se restaura (rb$entsp) y la direccion de retorno que saca el
+; "ret" final. Con "sistema" activo, esa misma direccion numerica cae en
+; la pagina fisica equivocada -- en el bloque 0 eso es la ROM del ZX81,
+; y el "ret" se lleva la ejecucion ahi (confirmado en hardware: sacaba
+; $7E09, que son bytes de la ROM en $0C18).
+;
+; No basta con que bank$bdos deje "usuario" al salir, porque hay caminos
+; que llegan aqui SIN pasar por el: las funciones de dispositivo
+; (rb$func3/6/7/8 -> readerf/constf/coninf/auxinstf...) llaman a la
+; tabla de saltos de bank.z80, cuyas entradas seleccionan sistema y no
+; lo restauran, y de ahi caen en rb$sta$ret -> aqui.
+;
+; Arreglarlo en cada entrada de la tabla seria lo ideal, pero son muchas
+; y el bloque duplicado ($7E00-$7FFF) va justo; ponerlo aqui lo hace
+; incondicional y en el sitio con el significado exacto. Es la misma
+; garantia que bank$bdos ya se da a si misma al salir ("mvi a,1 / jmp
+; selmemf"). Ojo con el orden: selmemf destruye A y HL, asi que los
+; valores de retorno (A, B y HL, de rb$aret) se cargan DESPUES.
+	mvi a,1
+	call selmemf
+
 	lhld rb$entsp
 	sphl ;user stack restored
 	lhld rb$aret
@@ -799,6 +860,25 @@ cdma003 equ	00001000B	;copy 1ST 3 bytes of common$dma
 				;to DMA on exit
 serout  equ	00000100b	;copy rb$serial # on exit
 
+; CPM3_SD81: dfctbl/xdfctbl (54 bytes) van en memoria comun, como el
+; resto del modulo, aunque sean tablas de solo lectura.
+;
+; Hubo un intento de dejarlas en memoria banked ($B780) para ahorrar
+; espacio comun, razonando que disk$function solo las consulta en su
+; prologo ("lxi h,dfctbl-12 / dad b / mov a,m") y que ese prologo corria
+; bajo "sistema". ERROR, confirmado en hardware: la BDOS residente se
+; entra con el banco de USUARIO puesto (ver call5_entry, init.z80), asi
+; que ese prologo lee con usuario activo -- y $B780 bajo usuario es
+; memoria de la CCP, no esta tabla. El despacho entero iba a ciegas.
+;
+; Se quedan aqui, en el hueco del final del banco 7. "nxdf" vale lo
+; mismo este donde este: es una resta de dos direcciones del mismo
+; bloque.
+
+resbdos$cseg$save equ $
+
+	org 0F7B8h
+
 dfctbl:
 	db 0			; 12=return version #
 	db 0			; 13=reset disk system
@@ -861,6 +941,17 @@ xdfctbl:
 
 nxdf equ ($-xdfctbl)+98
 
+; CPM3_SD81: guarda de tamano del hueco del final del banco 7 (las tablas
+; de arriba). Detras solo queda $F800, donde empieza @bnkbf.
+	ds 0F800h-$
+
+; CPM3_SD81: fin del parentesis -- de vuelta al bloque principal del
+; modulo, exactamente donde lo dejamos. Todo lo que viene debajo (rb$aret,
+; commonfcb, common$dma, rb$entsp, los vectores de intercepcion del BIOS)
+; SI necesita ser comun: se escribe bajo un contexto y se lee bajo el otro.
+
+	org resbdos$cseg$save
+
 res$fx:	ds	1
 rb$hash$tbla:
 	ds	2
@@ -885,6 +976,15 @@ common$dma:
 ; codigo) no cambie -- confirmado en hardware con un trazado paso a
 ; paso (RET final de la BDOS sacando una direccion de vuelta que era
 ; basura). Common (@bnkbf tiene el mismo motivo para estar ahi).
+;
+; PERO el "ds ssize*2" que habia DELANTE de lstack si tiene que seguir
+; aqui, y no es relleno: separa el buffer de 256 bytes (commonfcb +
+; common$dma) de rb$entsp. rb$func10 copia "maxlen+3" bytes al buffer,
+; asi que un programa que pida una linea de mas de 252 caracteres
+; escribiria justo encima de rb$entsp -- o sea, encima del SP al que la
+; BDOS tiene que volver. Al mover lstack al banco 7 nos llevamos por
+; error tambien estos 60 bytes; repuestos.
+		ds	60
 rb$entsp:	ds	2
 
 ; BIOS intercept vector
@@ -914,5 +1014,14 @@ listfx:		jmp	listf
 ; copias habria sido "Mult. def." (probado). El "end" que traia esta
 ; fuente tambien se quita -- bdos_full.z80 pone el suyo al final del
 ; ensamblado conjunto.
+
+; CPM3_SD81: guarda de tamano. El banco 7 va justo y los bloques se
+; colocan con "org" absolutos, asi que si este modulo creciera mas de la
+; cuenta se comeria en silencio el bloque comun de BIOSKRNL.ASM ($F598)
+; sin que el ensamblador dijera nada. Con esto, pasarse da un "ds"
+; negativo y el ensamblado falla. Rellena el hueco con ceros, que no
+; cuesta nada: el .cim es plano y esas direcciones ya estaban dentro.
+
+	ds 0F598h-$
 
 

@@ -163,14 +163,16 @@ d$init$next:
 ; banco 7 el problema no existe: ?bank solo reprograma los bancos 0-6,
 ; el 7 se queda igual pase lo que pase.
 ;
-; $F200: hueco libre en el banco 7 (ver chario.z80/init.z80) entre el
-; final de DFILE_val ($EA00 + 24*81 = $F198) y FONT_ADDR ($F800).
+; $F598: hueco en el banco 7 (ver el mapa completo en memory_map.md)
+; entre el final de RESBDOS.ASM y el bloque de ldccp_real ($F704).
+; Antes estaba en $F200; se movio al empaquetar el
+; banco 7 para hacerle sitio a RESBDOS.ASM entero.
 ; Requiere MC45 + sfast_mode_en activos para el fetch de instrucciones
 ; en esta zona (A14=1) -- ambos ya estan activos en este punto: MC45
 ; desde "start" (system.z80, antes de ?boot) y sfast_mode_en desde el
 ; POKE 2045,174 de ?init (init.z80), que se ejecuta ANTES de boot$1.
 
-	org 0F200h
+	org 0F598h
 
 boot$1:
 	call set$jumps
@@ -202,10 +204,31 @@ set$jumps:
 	shld 1	; BIOS warm start entry
 	lhld @MXTPA
 	shld 6	; BDOS system call entry
+
+; CPM3_SD81: inicializar TAMBIEN $0003 y $0004, que DRI no toca aqui.
+; $0004 es "(usuario << 4) | unidad" y estaba quedandose con basura de
+; la RAM del banco de usuario. Confirmado en hardware: valia $19, o sea
+; nibble alto 1 (el "1" que la CCP imprimia en su prompt) y byte entero
+; 25 (la unidad "Z" del mensaje de error). Las dos anomalias salian de
+; este unico byte sin inicializar.
+;
+; Nota: esto se ejecuta tambien en el arranque en caliente, asi que de
+; momento reinicia unidad/usuario en cada warm boot. No molesta porque
+; la CCP reescribe $0004 desde ccp$curdrv/ccp$curusr del SCB en cada
+; prompt; cuando esos campos se mantengan de verdad, revisar si conviene
+; hacerlo solo en el arranque en frio.
+	xra a
+	sta 3	; IOBYTE
+	sta 4	; unidad y usuario actuales
 	ret
 
 
-		ds 64
+; CPM3_SD81: 56 en vez de los 64 de DRI -- el bloque comun del banco 7 va
+; al byte y hacian falta 7 para inicializar $0003/$0004 (ver set$jumps).
+; La cadena mas profunda que usa esta pila es boot$1 -> set$jumps ->
+; ?bnksl, y ?bank tiene pila propia (bank$stack), asi que no pasa de 3-4
+; niveles; 56 bytes son 28.
+		ds 56
 boot$stack	equ $
 
 
@@ -455,6 +478,22 @@ ci$rdy:
 
 ;	Utility Subroutines
 
+; CPM3_SD81: ipchl/?pmsg/?pdec/table10/?pderr NO necesitan memoria comun
+; y se sacan del banco 7 (111 bytes recuperados para RESBDOS.ASM). Los
+; unicos llamantes son "boot"/seldsk (mas arriba y mas abajo en este
+; fichero, memoria banked), ?init (init.z80) y ?pderr entre si -- todos
+; se ejecutan con "sistema" seleccionado y ninguno atraviesa un cambio
+; de banco a mitad de rutina, que es el unico motivo real para estar en
+; comun. Si alguna se llegara a llamar desde la tabla de saltos de
+; bank.z80 tampoco pasaria nada: cada entrada de esa tabla selecciona
+; "sistema" ANTES de saltar a la rutina real.
+;
+; $B800: memoria banked que RESBDOS.ASM deja libre al mudarse al banco 7
+; (antes ocupaba $B700-$BC59). Justo detras del final de BDOS.ASM ($B7FF).
+
+bioskrnl$cseg$save equ $
+
+	org 0B800h
 
 ipchl:		; vectored CALL point
 	pchl
@@ -532,6 +571,11 @@ table10:
 	call ?pdec	; sector number
 	ret
 
+; CPM3_SD81: fin del parentesis en memoria banked -- volvemos al bloque
+; comun del banco 7 exactamente donde lo dejamos (ver arriba).
+
+	org bioskrnl$cseg$save
+
 
 	; BNKSEL
 	;	Bank Select.  Select CPU bank for further execution.
@@ -544,6 +588,12 @@ bnksel:
 
 xofflist	db	-1,-1,-1,-1,-1,-1,-1,-1		; ctl-s clears to zero
 		db	-1,-1,-1,-1,-1,-1,-1,-1
+
+; CPM3_SD81: guarda de tamano -- el siguiente bloque del banco 7 es
+; ldccp_real (init.z80, $F704). Si este se pasara, lo pisaria en
+; silencio; con esto el "ds" sale negativo y el ensamblado falla.
+
+	ds 0F704h-$
 
 
 
@@ -779,8 +829,15 @@ sector$msg	db	', S-',0
 ; nunca se actualiza, y una lectura posterior de @cbnk desde el otro
 ; contexto leeria basura/desactualizado -- mismo tipo de aliasing por
 ; pagina, aqui en un dato en vez de en codigo. En banco 7 (comun, banco
-; 3 no lo toca) esto no puede pasar. $E064: justo detras de las
-; variables del SCB (SCB.ASM, @MXTPA termina en $E064).
+; 3 no lo toca) esto no puede pasar.
+;
+; $E064: cuando se eligio, se creia que era "justo detras de las
+; variables del SCB". Eso era con la base del SCB mal puesta en $E000;
+; con la base correcta ($E09C, ver SCB.ASM) $E064 cae en realidad en la
+; zona BAJA de la pagina, la de variables internas de la BDOS. Sigue
+; siendo seguro -- comprobado que BDOS.ASM no define ningun campo por
+; debajo de $E090 (el mas bajo es olog, scb$pg+090h) -- pero la razon es
+; otra: esta libre, no "detras del SCB".
 
 	org 0E064h
 

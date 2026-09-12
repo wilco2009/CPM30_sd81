@@ -21,7 +21,11 @@
 
 ;            public ?ci,?co,?cist,?cost,?cinit,@ctbl
 
-DFILE       equ 0EA00h          ; buffer de pantalla (igual que boot_cpm.asm)
+DFILE       equ 0E899h          ; buffer de pantalla -- TIENE QUE COINCIDIR
+                                ; con DFILE_val (init.z80), que es quien se
+                                ; lo comunica al FPGA por POKE 2096/2097.
+                                ; Movido desde $EA00 al empaquetar el banco 7
+                                ; (ver la nota en init.z80).
 SCRW        equ 80
 SCRH        equ 24
 ROWSTRIDE   equ 81              ; 80 caracteres + 1 byte de relleno

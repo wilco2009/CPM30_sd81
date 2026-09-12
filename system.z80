@@ -73,6 +73,14 @@ bms_wait:   in   a,(0AFh)
 ;  ATRAS -- ver memory_map.md, la nota sobre inestabilidad de fase con
 ;  "equ" hacia delante (nos costo una buena sesion de depuracion).
 ; -----------------------------------------------------------------------
+; CPM3_SD81: guarda de tamano del XIOS. BDOS.ASM empieza con un "org
+; 08A00h" absoluto, y dos "org" que se solapan NO dan error: el segundo
+; simplemente pisa al primero en silencio. Con esto, si el XIOS creciera
+; por encima de $8A00 el "ds" sale negativo y el ensamblado falla.
+; Subido de $8900 a $8A00 al sacar move.z80 del bloque duplicado: el XIOS
+; se desplazo ~228 bytes y se pasaba por 38.
+            ds   08A00h-$
+
             .8080
             include "BDOS.ASM"
             include "RESBDOS.ASM"
@@ -84,5 +92,12 @@ xdmaad		equ	xdmaadd
 srch$hash	equ	rb$search$hash
 
             include "ccp_image.z80"
+
+; Tabla de fuentes de 256 caracteres, ensamblada directamente en $F800
+; (banco 7). Va la ultima porque es lo mas alto del mapa; el .cim es
+; plano y se carga desde $6000, asi que el cargador la deja ya puesta y
+; ?init solo tiene que apuntar el registro I. Generada -- ver la
+; cabecera del fichero.
+            include "font_image.z80"
 
             end

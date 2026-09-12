@@ -63,7 +63,7 @@ ctl	equ	5eh	; up arrow
 ; final real del XIOS es "noccp_msg" en $8848 (+6 = $884E) -- $8900 dej
 ; margen de sobra. Cabe en los bloques 4-5 (hasta ~$BD00), sin
 ; necesitar mc45_ext67.
-		org	08900h
+		org	08A00h
 base		equ	$
 
 ; CPM3_SD81: bnkbdos$pg/resbdos$pg/bios$pg (offsets relativos a "base")

@@ -11,9 +11,12 @@
 ;  que el video este listo antes de que esta rutina lo deje listo.
 ;
 ;  Secuencia de video: identica a boot_cpm.asm/banktest.asm, ya
-;  validada en hardware real -- incluida la leccion de banktest.asm
-;  (copiar la fuente de la ROM ANTES de remapear los bloques 0-2, si no
-;  $1E00 deja de ser la ROM real y la copia sale en blanco).
+;  validada en hardware real. La leccion de banktest.asm sobre copiar la
+;  fuente de la ROM ANTES de remapear los bloques 0-2 (si no, $1E00 deja
+;  de ser la ROM real y la copia sale en blanco) ya no aplica: la fuente
+;  real de 256 caracteres se ensambla directamente en su sitio
+;  (font_image.z80, $F800) y el cargador la deja puesta -- aqui solo
+;  queda apuntar el registro I.
 ; =====================================================================
 
 ;            public ?init,?ldccp,?rlccp
@@ -21,13 +24,23 @@
 
 DFILE_OVR      equ 2096
 DFILE_OVR_EN   equ 2098
-DFILE_val      equ 0EA00h
+; CPM3_SD81: DFILE/ATTR empaquetados (antes $EA00/$E200, alineados a 2 KB
+; por costumbre, no por necesidad). El FPGA no impone NINGUNA alineacion:
+; con el override activo calcula "char_addr_80 = DFILE_eff+1+fila+col" y
+; "attr_addr_m1 = ATTR_BASE_OVERRIDE+1+..." con sumadores de 16 bits
+; completos (SD81.v:1048/1070, el comentario del propio Verilog lo dice:
+; "base COMPLETAMENTE independiente, direccion de 16 bits sin truncar ni
+; forzar el bit 15"). Cada buffer ocupa 1+24*81 = 1945 bytes reales, asi
+; que los slots de 2048 desperdiciaban 104 bytes cada uno, y el SCB (256
+; bytes exactos, hasta bdosadd = scb$pg+0FEh) dejaba otros 256 sin usar
+; entre $E100 y $E200. Recuperados para meter RESBDOS.ASM en el banco 7
+; -- ver memory_map.md.
+DFILE_val      equ 0E899h
 ATTR_OVR       equ 2059
 ATTR_OVR_EN    equ 2061
-ATTR_val       equ 0E200h
+ATTR_val       equ 0E100h
 FONT_I         equ 0F8h
-FONT_ADDR      equ 0F800h
-CHARSET_SRC    equ 01E00h
+FONT_ADDR      equ 0F800h        ; la tabla la genera font_image.z80
 
 ROWS           equ 24
 COLS           equ 80
@@ -72,20 +85,71 @@ CMD_fullpaging equ 01Dh        ; 29
             ld   hl, call5_entry
             ld   (@MXTPA), hl
 
+            ; --- vector de error del SCB ($E0FB) ---
+            ; En un CP/M+ real esta ranura la rellena GENSYS, el generador
+            ; de sistema de DRI, con un "jmp error$sub". Lo dice el propio
+            ; comentario de BDOS.ASM: "error$sub is referenced indirectly
+            ; by the SCB ERROR field in RESBDOS ... This value is converted
+            ; to the actual address of error$sub BY GENSYS". Como nosotros
+            ; no pasamos por GENSYS, hay que ponerlo a mano o queda a
+            ; ceros -- y entonces el primer error de la BDOS (p.ej. un
+            ; "Invalid Drive", que es justo lo que pasa mientras no haya
+            ; unidades reales) hace "call error" contra $E0FB, cae por los
+            ; NOPs del final del SCB y sigue ejecutando los atributos y la
+            ; pantalla como si fueran codigo. Confirmado en hardware.
+            ;
+            ; Se usa ?ERJMP (SCB.ASM, incluido ANTES que este fichero) y
+            ; no el simbolo "error" de BDOS.ASM, que se incluye despues:
+            ; las referencias adelantadas a equ ya nos han desestabilizado
+            ; el ensamblado otras veces. Con la base del SCB corregida,
+            ; ?ERJMP y "error" son la misma direccion ($E0FB).
+            ld   a, 0C3h         ; opcode de JMP
+            ld   (?ERJMP), a
+            ld   hl, error$sub
+            ld   (?ERJMP+1), hl
+
+            ; --- @BNKBF: el campo del SCB es un PUNTERO al buffer de 128
+            ; bytes del BIOS bancado, no el buffer. Nuestro codigo usa el
+            ; simbolo @BNKBF como el buffer en si (ver SCB.ASM), asi que
+            ; aqui se deja ademas la direccion en la ranura que le
+            ; corresponde, por si alguna parte de la BDOS la consulta.
+            ld   hl, @BNKBF
+            ld   (scb$base+35h), hl
+
+            ; --- campos del SCB que rellena GENSYS ---
+            ; Mismo caso que el vector de error de arriba: en un CP/M+
+            ; real los deja puestos el generador de sistema, y nosotros
+            ; no pasamos por el.
+            ;
+            ; scb$base+3Ah ("system control block address") es el que la
+            ; CCP pide con la funcion 49 nada mas arrancar y guarda en
+            ; "scbaddr". A partir de ahi lee TODOS los campos del SCB con
+            ; el patron "mvi l,offset / mov a,m", o sea usando solo la
+            ; parte ALTA de ese valor como pagina. Con el campo a ceros se
+            ; quedaba con H=$00 y leia la pagina cero en vez del SCB.
+            ; Confirmado en hardware: metia el $FF de $00EC en el byte de
+            ; unidad de su FCB de $$$.SUB (deberia haber leido temp$drive
+            ; en $E0EC), y de ahi la unidad absurda del mensaje de error.
+            ld   hl, scb$base
+            ld   (scb$base+3Ah), hl
+
+            ; Geometria de consola. La CCP la lee al arrancar para
+            ; calcular columnas del catalogo y tamano de pagina:
+            ;   dircols = (conwidth+1)/16   -> conwidth es 0-relativo
+            ;   pgsize  = conpage-1
+            ld   a, COLS-1
+            ld   (scb$base+1Ah), a       ; conwidth  ($E0B6)
+            ld   a, ROWS
+            ld   (scb$base+1Ch), a       ; conpage   ($E0B8)
+
+            ; Fuente: la tabla real de 256 caracteres ya esta en $F800,
+            ; ensamblada en su sitio (font_image.z80) y puesta ahi por el
+            ; propio cargador -- no hay nada que copiar. Aqui solo hace
+            ; falta decirle al hardware donde esta, que en el ZX81 es el
+            ; registro I (la FPGA lo captura en el refresco: "if (~nRFSH)
+            ; ROMTABLE[15:8] = Addr[15:8]", SD81.v:456).
             ld   a, FONT_I
             ld   i, a
-
-            ; fuente: copia de ROM x4 (ANTES de remapear bloques 0-2 --
-            ; ver la nota de cabecera)
-            ld   de, FONT_ADDR
-            ld   b, 4
-in_copy_font:
-            push bc
-            ld   hl, CHARSET_SRC
-            ld   bc, 512
-            ldir
-            pop  bc
-            djnz in_copy_font
 
             ; secuencia de video real de boot_cpm.asm (ya validada en hardware)
             ld   a, (8 << 3)  | 0
@@ -137,6 +201,32 @@ in_copy_font:
             ; --- duplicar el switcher (bank.z80) en la pagina de usuario ---
             call dup_switcher
 
+            ; --- rellenar la pagina 0 con HALT (ayuda de diagnostico) ---
+            ; Bajo "sistema", ?bank mapea BANK0_BASE+bloque, o sea la
+            ; pagina 0 en el bloque 0 -- y la pagina 0 es la ROM del ZX81.
+            ; Eso hacia que cualquier salto perdido a memoria baja acabara
+            ; EJECUTANDO la ROM, que sigue viva y se queda en su bucle de
+            ; teclado: el fallo se disfrazaba de "se ha colgado" en vez de
+            ; parar donde se produjo. Rellenandola de $76 (HALT) la CPU
+            ; para en seco y el depurador da la direccion exacta.
+            ;
+            ; Hay que hacerlo por ventana temporal: a estas alturas el
+            ; bloque 0 ya tiene la pagina 8 (ver arriba), asi que no vale
+            ; escribir directamente en $0000. Se usa el bloque 6 porque a
+            ; estas alturas nadie lee todavia lo que hay ahi (parte de la
+            ; imagen de la CCP), y se restaura al salir.
+            ld   a, 0            ; pagina 0 (la ROM)
+            ld   e, 6            ; ventana: bloque 6 ($C000-$DFFF)
+            call map1blk
+            ld   hl, 0C000h
+            ld   (hl), 076h      ; HALT
+            ld   de, 0C001h
+            ld   bc, 8191
+            ldir
+            ld   a, BANK0_BASE+6 ; restaurar la pagina de sistema
+            ld   e, 6
+            call map1blk
+
             ; --- senal de vida: mensaje en pantalla ---
             ld   hl, signon_msg
             call ?pmsg
@@ -173,7 +263,13 @@ in_clear_screen:
             ld   b, ROWS
 ics_row:    push bc
             ld   c, COLS
-            xor  a
+            ; codigo 32 (espacio ASCII), no 0: coincide con "cls"
+            ; (chario.z80) y con la fuente ASCII que se cargara desde SD.
+            ; Ademas deja libres los 256 bytes de la tabla de fuentes que
+            ; corresponden a los codigos 0-31 (nunca imprimibles: ?co los
+            ; filtra con "cp 20h / ret c"), como reserva de memoria comun
+            ; -- ver memory_map.md.
+            ld   a, 32
 ics_col:    ld   (hl), a
             inc  hl
             dec  c
@@ -200,20 +296,22 @@ ica_col:    ld   (hl), a
             djnz ica_row
             ret
 
-; Mensajes en codigos ZX81 (ver chario.z80 -- la fuente cargada es la
-; ROM del ZX81 en su orden nativo, no ASCII). Terminados en 0 (real
-; convencion de ?pmsg -- NO el $FF que usa nuestro propio print_msg de
-; banktest.asm) y SOLO letras (38-63): los digitos ZX81 (28-37) caen
-; por debajo de $20 y ?co (el emulador ADM-3A completo, a diferencia
-; del print_msg directo de banktest.asm) los trata como codigos de
-; control y los ignora -- nada de digitos ni espacio (tambien <$20) en
-; estos mensajes.
-signon_msg: defb 46,51,46,57,0        ; "INIT"
-noccp_msg:  defb 51,52,40,40,53,0     ; "NOCCP"
+; Mensajes de prueba, terminados en 0 (la convencion de ?pmsg -- NO el
+; $FF que usa el print_msg directo de banktest.asm).
+;
+; Ahora en ASCII normal: la fuente ya no es la ROM del ZX81 en su orden
+; nativo, sino la tabla ASCII/CP437 de font_image.z80. Antes iban como
+; codigos ZX81 ("INIT" = 46,51,46,57) y con la restriccion de usar SOLO
+; letras, porque los digitos del ZX81 (28-37) y su espacio caen por
+; debajo de $20 y ?co los tomaba por codigos de control. Eso se acabo:
+; ya se puede escribir cualquier texto imprimible tal cual.
+signon_msg: defb 'INIT', 0
+noccp_msg:  defb 'NOCCP', 0
 
 ; =======================================================================
-;  ldccp_real - banco 7 ($F400, hueco libre justo detras de xofflist,
-;  que termina en $F3D8 -- ver bank.z80). Bug real encontrado en
+;  ldccp_real - banco 7 ($F704, hueco libre justo detras del bloque
+;  comun de BIOSKRNL.ASM; antes en $F400, movido al empaquetar el banco
+;  7 para hacerle sitio a RESBDOS.ASM). Bug real encontrado en
 ;  hardware con trazado paso a paso: esta rutina cambia de contexto
 ;  (sistema/usuario) VARIAS veces DURANTE su propia ejecucion (igual
 ;  que boot$1/set$jumps/bnksel, ver bank.z80) -- viviendo en banco 4
@@ -226,7 +324,9 @@ noccp_msg:  defb 51,52,40,40,53,0     ; "NOCCP"
 ;  lo toca "?bank", así que basta con vivir aqui, sin trucos.
 ; =======================================================================
 
-            org  0F400h
+init$cseg$save equ $          ; ver el "org" de cierre al final del fichero
+
+            org  0F704h
 
 ; ---------------------------------------------------------------------
 ; ldccp_real - copia ccp$image (CCP3.ASM ya ensamblada, incrustada como
@@ -292,23 +392,30 @@ ldc$loop:   ; sistema activo aqui (al entrar, y al final de cada vuelta)
             ret
 
 ; ---------------------------------------------------------------------
-; call5_entry - a esto apunta @MXTPA (arriba). Mismo patron que toda la
-; tabla de saltos de bank.z80: seleccionar sistema ANTES de saltar a la
-; rutina real ("bdos:", RESBDOS.ASM, memoria de sistema normal) -- un
-; programa de usuario haciendo "call 5" llega aqui con "usuario"
-; todavia activo (nadie ha cambiado de banco en ese punto).
+; call5_entry - a esto apunta @MXTPA (arriba), o sea es el destino del
+; "call 5" de cualquier programa de usuario.
 ;
-; NOTA/pendiente: esto resuelve la ENTRADA. La vuelta a "usuario" antes
-; de que la BDOS devuelva el control al programa de usuario (necesaria
-; para que su propio "ret" final no se encuentre con el mismo problema
-; al reves) todavia no esta resuelta -- probablemente haga falta un
-; trampolin parecido en "goback" (RESBDOS.ASM, gestiona el retorno de
-; las funciones) o donde corresponda. Sin verificar en hardware todavia
-; -- ver memory_map.md.
+; NO cambia de banco, a proposito. Antes hacia "xor a / call bnksel"
+; para seleccionar sistema, y era obligatorio porque "bdos:" vivia en
+; memoria banked de sistema. Con RESBDOS.ASM entero en el banco 7
+; (comun) eso ya no hace falta, y ademas ROMPE el diseño de DRI: la
+; BDOS residente se entra con el banco de USUARIO todavia puesto.
+;
+; Tiene que ser asi porque casi todo lo que hace este modulo antes de
+; llamar a bank$bdos se refiere a memoria del usuario:
+;   - "dad sp / shld rb$entsp" guarda el SP de la CCP, y rb$goback lo
+;     restaura con "sphl / ret" -- leer ahi con "sistema" activo saca
+;     la ROM del ZX81 en vez de la pila de la CCP (confirmado en
+;     hardware: el ret sacaba $7E09, que son bytes de la ROM en $0C18).
+;   - disk$function copia el FCB y el DMA "from the user bank to common
+;     memory" (comentario del propio DRI) -- con sistema activo estaria
+;     copiando memoria equivocada.
+;
+; El unico que cambia a sistema es bank$bdos, para ejecutar la parte
+; bancada de la BDOS, y vuelve a usuario el solo antes de devolver el
+; control ("mvi a,1 / jmp selmemf").
 ; ---------------------------------------------------------------------
 call5_entry:
-            xor  a
-            call bnksel          ; sistema activo
             jmp  bdos
 
 ; ---------------------------------------------------------------------
@@ -330,3 +437,25 @@ lstack:
 ldc$src:    ds   2
 ldc$dst:    ds   2
 ldc$cnt:    ds   1
+
+; CPM3_SD81: guarda de tamano -- el siguiente bloque del banco 7 son las
+; variables de ?bank (bank.z80, $F7A4). Si este se pasara, lo pisaria en
+; silencio; con esto el "ds" sale negativo y el ensamblado falla.
+
+            ds   0F7A4h-$
+
+; =====================================================================
+;  FIN del bloque del banco 7. Vuelta a memoria normal.
+;
+;  CPM3_SD81: este "org" de cierre FALTABA, y es el mismo descuido que
+;  el de bank.z80 (ver alli). init.z80 es el ultimo fichero del XIOS,
+;  asi que sin esto el contador de posicion se quedaba en $F7A4 al
+;  terminar -- y la guarda de system.z80 ("ds 08A00h-$", justo detras
+;  del include) comparaba contra $F7A4 en vez de contra el final real
+;  del XIOS, dando siempre un "Value error" enganoso.
+;
+;  Aqui no hay nada detras dentro de este fichero, pero el contador de
+;  posicion es global al ensamblado: hay que dejarlo donde estaba.
+; =====================================================================
+
+            org  init$cseg$save

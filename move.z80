@@ -24,6 +24,9 @@
 
 xmv$dbnk:   ds   1
 xmv$sbnk:   ds   1
+; xmv$pend vive en bank.z80 (banco 7), no aqui: lo escribe ?xmove bajo
+; sistema y lo consulta ?mov bajo el banco del llamante, asi que tiene
+; que ser memoria comun.
 mv$de:      ds   2              ; puntero origen, avanza entre trozos
 mv$hl:      ds   2              ; puntero destino, avanza entre trozos
 mv$cnt:     ds   2              ; bytes restantes
@@ -33,9 +36,36 @@ mv$len:     ds   1              ; longitud del trozo actual (1-128)
             ld   (xmv$dbnk),a
             ld   a,c
             ld   (xmv$sbnk),a
+            ld   a,0FFh
+            ld   (xmv$pend),a    ; marca: el proximo ?move es entre bancos
             ret
 
-?move:      ld   (mv$de),de
+; ---------------------------------------------------------------------
+; ?move - HL = destino, DE = origen, BC = contador. Devuelve HL y DE
+; avanzados y BC = 0.
+;
+; CPM3_SD81: la especificacion de DRI es que MOVE copia DENTRO DEL BANCO
+; ACTUAL, y solo usa bancos distintos si XMOVE se llamo inmediatamente
+; antes -- y XMOVE afecta SOLO al siguiente MOVE. Esta version hacia
+; siempre la copia entre bancos usando xmv$sbnk/xmv$dbnk, que fuera de
+; esa secuencia contienen valores rancios.
+;
+; Sintoma real que producia: "cpyfcbin" (RESBDOS.ASM) copia el FCB del
+; usuario a commonfcb con "lxi h,commonfcb / lxi b,36 / call movef", SIN
+; xmovef delante -- asi que leia el FCB del banco equivocado y la BDOS
+; recibia basura. Confirmado en hardware: la CCP pasaba su "subfcb" con
+; el byte de unidad = 1 (unidad A) y la BDOS acababa seleccionando la
+; unidad 25, que es la "Z" del mensaje de error.
+; ---------------------------------------------------------------------
+; A ?move solo se llega con un XMOVE pendiente: el caso normal (copia
+; dentro del banco activo) lo resuelve ya la entrada ?mov de bank.z80,
+; que vive en el bloque duplicado y por tanto puede hacer el LDIR sin
+; tocar el paginado. Aqui siempre hay que cambiar de banco, y por eso
+; este cuerpo vive en memoria bancada sin problema.
+?move:      xor  a
+            ld   (xmv$pend),a    ; XMOVE solo vale para este ?move
+
+            ld   (mv$de),de
             ld   (mv$hl),hl
             ld   (mv$cnt),bc
 

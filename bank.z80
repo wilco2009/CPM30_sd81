@@ -35,7 +35,8 @@
 
 ; ---------------------------------------------------------------------
 ;  bank$savesp/bank$stack -- pila temporal de ?bank (ver la nota junto
-;  a ?bank, mas abajo). Declarado AQUI (banco 7, $F600) y no al final
+;  a ?bank, mas abajo). Declarado AQUI (banco 7, $F7A4 -- antes $F600,
+;  movido al empaquetar el banco 7 para RESBDOS.ASM) y no al final
 ;  del fichero a proposito -- referenciado hacia delante desde ?bank
 ;  desestabilizaba el ensamblado en varias pasadas (mismo sintoma que
 ;  el "bdose2" de BDOS.ASM: nada relacionado a simple vista dejaba de
@@ -44,16 +45,34 @@
 ;  (dup_switcher etc.) exactamente donde continuaria si este bloque no
 ;  existiera -- direccion confirmada en el .lst de antes de este bug.
 ; ---------------------------------------------------------------------
-            org  0F600h
+            org  0F7A4h
 
 bank$retaddr: ds 2               ; direccion de retorno real del
                                   ; llamante, leida antes de reprogramar
                                   ; nada (ver la nota junto a ?bank)
 bank$savesp: ds  2
-            ds   16              ; 8 niveles de push -- de sobra (?bank
+bank$savehl: ds  2               ; HL del llamante (ver la nota en ?mov)
+xmv$pend:   ds   1               ; <>0: hay un ?xmove pendiente. EN BANCO 7
+                                  ; a proposito: lo escribe ?xmove bajo
+                                  ; sistema y lo lee ?mov bajo el banco del
+                                  ; llamante, asi que tiene que ser comun.
+            ds   13              ; 6 niveles de push -- de sobra (?bank
                                   ; solo usa 4: af/bc/de + el bc interno
                                   ; del bucle)
-bank$stack:
+bank$stack:                      ; tope de la pila; crece hacia abajo (el
+                                  ; push decrementa SP ANTES de escribir),
+                                  ; asi que en esta direccion no se escribe
+                                  ; nunca. Los 16 bytes utiles quedan justo
+                                  ; debajo. Para ampliarla, agrandar el "ds"
+                                  ; de arriba -- NO mover esta etiqueta.
+
+; CPM3_SD81: guarda de tamano -- este es el ultimo bloque antes de $F800.
+; A partir de ahi empieza la tabla de fuentes, cuyos primeros 128 bytes
+; (glifos de los codigos 0-15, nunca imprimibles) los ocupa @bnkbf
+; (SCB.ASM). Si este bloque se pasara, el "ds" sale negativo y el
+; ensamblado falla.
+
+            ds   0F800h-$
 
             org  062E9h
 
@@ -66,7 +85,10 @@ bank$stack:
 ;  con "call bnksel" (no "call ?bank" a secas): bnksel actualiza @cbnk
 ;  ademas de reprogramar el hardware, y hace falta que @cbnk quede
 ;  sincronizado o ?move se desincroniza mas adelante (ver move.z80,
-;  mv$done). ?boot es la unica excepcion -- se ejecuta una sola vez, al
+;  mv$done). DOS EXCEPCIONES: ?mov y ?xmov si usan "call ?bank" a
+;  proposito, justo para que @cbnk conserve el banco del llamante y
+;  ?move pueda restaurarlo -- ver la nota junto a ?mov. ?boot es la
+;  tercera excepcion -- se ejecuta una sola vez, al
 ;  arrancar, antes de que FULL_PAGING este activo; forzar un cambio de
 ;  contexto ahi seria prematuro. El cuerpo real va mas abajo, DESPUES
 ;  de "org SWITCHER_BASE" -- tiene que quedar duplicado tambien.
@@ -282,8 +304,65 @@ bank_loop:  ld   a,d
             call bnksel
             jmp  flush
 
-?mov:       xor  a
-            call bnksel
+; CPM3_SD81: ?mov/?xmov usan "call ?bank", NO "call bnksel" como el
+; resto de la tabla -- es la excepcion deliberada (mismo tamaño, solo
+; cambia el destino). ?bank reprograma el hardware SIN tocar @cbnk, asi
+; que @cbnk sigue diciendo cual era el banco del llamante, que es
+; justo lo que ?move necesita para restaurarlo al terminar ("mv$done:
+; ld a,(@cbnk) / call ?bank", move.z80).
+;
+; Con "call bnksel" aqui, @cbnk quedaba a 0 antes de que ?move lo
+; leyera y ?move restauraba "sistema" en vez del banco del llamante.
+; Eso era correcto mientras la BDOS residente corria bajo sistema; con
+; la BDOS entrando bajo USUARIO (ver call5_entry, init.z80) deja el
+; contexto equivocado, y la cola de disk$function acaba en rb$goback
+; leyendo la ROM en vez de la pila de la CCP.
+;
+; A estas dos entradas no las llaman programas de usuario (nadie llama
+; a BIOS MOVE desde la TPA), solo la BDOS -- por eso pueden ser
+; transparentes al banco sin romper el motivo por el que el resto de la
+; tabla si actualiza @cbnk.
+; BUG REAL, presente desde el principio. La convencion del BIOS de CP/M 3
+; para MOVE es "HL = destino, DE = origen, BC = contador", pero ?bank
+; termina con "ld hl,(bank$retaddr) / jp (hl)", o sea DESTRUYE HL. Asi
+; que ?move recibia como destino la direccion del propio "jmp ?move"
+; ($7EEC) en vez del destino real.
+;
+; Efecto: la primera copia de FCB de la BDOS (cpyfcbin: "lxi h,commonfcb
+; / lxi b,36 / call movef") escribia 36 bytes JUSTO ENCIMA de la tabla de
+; saltos -- ?tim, ?bnksl, ?stbnk, ?xmov, ?ldccp. Con ?bnksl machacada,
+; todos los cambios de banco posteriores saltan a basura. De ahi las
+; direcciones sin sentido que salian de bank$retaddr.
+;
+; HL se salva en banco 7 (comun) porque se escribe con el banco del
+; llamante puesto y se lee ya bajo sistema.
+; El caso normal (sin XMOVE pendiente) se resuelve AQUI MISMO, sin tocar
+; el paginado. Es lo correcto y ademas lo unico que funciona: MOVE tiene
+; que copiar dentro del banco del llamante, y este bloque esta duplicado
+; en ambos contextos, asi que puede ejecutar el LDIR sin cambiar nada.
+;
+; Hacerlo dentro de ?move NO vale: ?move vive en memoria bancada, asi que
+; para llegar a el hay que seleccionar sistema -- y entonces el LDIR
+; copiaria del banco equivocado. Confirmado en hardware: la copia del FCB
+; de la BDOS traia 36 bytes de $76 (el relleno de HALT de la pagina 0)
+; porque se ejecutaba con sistema puesto.
+?mov:       ld   a,b
+            or   c
+            ret  z               ; BC=0: nada que mover. Un LDIR con BC=0
+                                  ; copiaria 65536 bytes.
+            ld   a,(xmv$pend)    ; banco 7: legible bajo cualquier contexto
+            or   a
+            jr   nz, mov$bank
+
+            ex   de,hl           ; HL=origen, DE=destino (orden de LDIR)
+            ldir
+            ex   de,hl           ; HL=destino+n, DE=origen+n (orden CP/M)
+            ret
+
+mov$bank:   ld   (bank$savehl), hl
+            xor  a
+            call ?bank
+            ld   hl, (bank$savehl)
             jmp  ?move
 ?tim:       xor  a
             call bnksel
@@ -293,7 +372,7 @@ bank_loop:  ld   a,d
             call bnksel
             jmp  setbnk
 ?xmov:      xor  a
-            call bnksel
+            call ?bank           ; ver la nota en ?mov
             jmp  ?xmove
 
 ; ?ldccp/?rlccp: BIOSKRNL.ASM (boot$1/wboot) los llama DIRECTAMENTE, sin
@@ -310,3 +389,37 @@ bank_loop:  ld   a,d
 ?rlccp:     xor  a
             call bnksel
             jmp  ldccp_real
+
+; =====================================================================
+;  FIN de la zona duplicada. A partir de aqui, memoria normal.
+;
+;  CPM3_SD81: este "org" FALTABA, y era un bug real y grave. El bloque
+;  duplicado son los 512 bytes $7E00-$7FFF (SWITCHER_LEN), pero la tabla
+;  de saltos termina sobre $7F1C, asi que todo lo que se incluye despues
+;  (move.z80 el primero) empezaba AHI -- o sea, DENTRO de la zona que
+;  dup_switcher copia a la pagina de usuario. Contradecia ademas lo que
+;  dice la cabecera de este fichero ("?xmove/?move ... viven en zona
+;  normal, no aqui").
+;
+;  Por que es grave: la zona duplicada vive en el bloque 3, que ?bank SI
+;  repagina. Las variables de move.z80 (xmv$dbnk/xmv$sbnk/xmv$pend en
+;  $7F1C-$7F1E, mv$de/mv$hl/mv$cnt detras) quedaban por tanto DUPLICADAS,
+;  con una copia por contexto:
+;
+;    - ?move escribia mv$de/mv$hl/mv$cnt, hacia "call ?bank" para pasar al
+;      otro contexto, y luego los leia de la OTRA copia -- la que
+;      dup_switcher dejo congelada en el arranque.
+;    - ?xmove ponia xmv$pend/xmv$sbnk en una copia y ?move los consultaba
+;      en la otra.
+;
+;  Sintoma confirmado en hardware: la copia del FCB de la BDOS acababa
+;  leyendo del banco 0 y trayendo 36 bytes de $76 (el relleno de HALT de
+;  la pagina 0) en vez del FCB de la CCP.
+;
+;  $8000 es el primer byte fuera del bloque duplicado. Lo que viene
+;  detras (move.z80, diskio.z80, drvtbl.z80, chario.z80, init.z80) se
+;  desplaza ~228 bytes hacia arriba; sigue cabiendo de sobra antes del
+;  "org 08900h" de BDOS.ASM.
+; =====================================================================
+
+            org  08000h
