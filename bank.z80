@@ -66,13 +66,55 @@ bank$stack:                      ; tope de la pila; crece hacia abajo (el
                                   ; debajo. Para ampliarla, agrandar el "ds"
                                   ; de arriba -- NO mover esta etiqueta.
 
-; CPM3_SD81: guarda de tamano -- este es el ultimo bloque antes de $F800.
-; A partir de ahi empieza la tabla de fuentes, cuyos primeros 128 bytes
-; (glifos de los codigos 0-15, nunca imprimibles) los ocupa @bnkbf
-; (SCB.ASM). Si este bloque se pasara, el "ds" sale negativo y el
-; ensamblado falla.
+; CPM3_SD81: guarda de tamano -- detras viene dfctbl/xdfctbl
+; (RESBDOS.ASM, org 0F7B8h). Antes esta guarda rellenaba hasta $F800 y
+; por tanto SOLAPABA esas tablas; funcionaba de milagro, porque
+; RESBDOS.ASM se ensambla despues y sus bytes ganaban. Dos "org" que se
+; pisan no dan ningun error.
 
-            ds   0F800h-$
+            ds   0F7B8h-$
+
+; ---------------------------------------------------------------------
+;  Estado del envoltorio biosw (ver mas abajo, junto a la tabla).
+;
+;  Tiene que estar en banco 7: se escribe a un lado de un cambio de banco
+;  y se lee al otro. Va sobre los glifos 16-20 de la tabla de fuentes
+;  ($F880-$F8A7), que no son imprimibles nunca (?co filtra todo lo que
+;  esta por debajo de $20) -- por eso genfont.py empieza a emitir en el
+;  codigo 21. Es la "reserva" del banco 7 que ya teniamos apuntada.
+; ---------------------------------------------------------------------
+            org  0F880h
+
+bw$sp:      ds   2               ; SP del llamante
+bw$hl:      ds   2               ; rutina real a la que hay que saltar
+bw$bnk:     ds   1               ; banco del llamante, para restaurarlo
+bw$a:       ds   1               ; valor devuelto en A
+            ds   32              ; 16 niveles -- la rutina real (conout ->
+                                  ; out$scan -> coster -> ?co ...) anida
+                                  ; bastante mas que ?bank
+bw$stack:                        ; tope; crece hacia abajo, aqui no se
+                                  ; escribe nunca (igual que bank$stack)
+
+; ---------------------------------------------------------------------
+;  bank$exit - salida de ?bank. Restaura el HL del llamante y salta a su
+;  direccion de retorno.
+;
+;  Vive en banco 7 y NO en la zona duplicada porque se automodifica: el
+;  destino del "jp" se escribe justo antes de ejecutarlo. En la zona
+;  duplicada eso seria inseguro (hay dos copias y ?bank cambia de banco a
+;  mitad de su ejecucion, asi que podria modificarse una y ejecutarse la
+;  otra). En banco 7 hay una sola copia y nunca se repagina.
+;
+;  Se llega aqui con el cambio de banco YA hecho, asi que no se toca la
+;  pila del llamante -- que es el motivo por el que ?bank usaba "jp (hl)"
+;  en vez de un "ret" y por el que no se puede simplemente hacer push.
+; ---------------------------------------------------------------------
+bank$exit:  ld   hl,(bank$retaddr)
+            ld   (bank$jp+1),hl
+            ld   hl,(bank$savehl)
+bank$jp:    jp   0000h           ; automodificado, ver arriba
+
+            ds   0F8B8h-$        ; guarda: detras empieza la fuente (cod 23)
 
             org  062E9h
 
@@ -81,17 +123,30 @@ bank$stack:                      ; tope de la pila; crece hacia abajo (el
 ;  nota en ese fichero). Duplicada al final del banco 3 junto con
 ;  ?bank/map1blk porque programas de usuario reales llaman a estas
 ;  entradas DIRECTAMENTE (sin pasar por BDOS) con "usuario" activo.
-;  Cada entrada hace "seleccionar sistema, saltar a la rutina real" --
-;  con "call bnksel" (no "call ?bank" a secas): bnksel actualiza @cbnk
-;  ademas de reprogramar el hardware, y hace falta que @cbnk quede
-;  sincronizado o ?move se desincroniza mas adelante (ver move.z80,
-;  mv$done). DOS EXCEPCIONES: ?mov y ?xmov si usan "call ?bank" a
-;  proposito, justo para que @cbnk conserve el banco del llamante y
-;  ?move pueda restaurarlo -- ver la nota junto a ?mov. ?boot es la
-;  tercera excepcion -- se ejecuta una sola vez, al
-;  arrancar, antes de que FULL_PAGING este activo; forzar un cambio de
-;  contexto ahi seria prematuro. El cuerpo real va mas abajo, DESPUES
-;  de "org SWITCHER_BASE" -- tiene que quedar duplicado tambien.
+;  Hay tres formas de entrada, segun quien llame y que necesite:
+;
+;   a) E/S de caracter (?const/?conin/?cono/?list/?auxo/?auxi/?conos/
+;      ?auxis/?auxos/?lists): "ld hl,rutina / jmp biosw". El envoltorio
+;      cambia a sistema, LLAMA a la rutina y RESTAURA el banco del
+;      llamante antes de volver, de modo que una llamada al BIOS no
+;      altera el banco visible. Ver la nota larga junto a biosw.
+;
+;   b) Disco (?home/?sldsk/?sttrk/?stsec/?stdma/?read/?write/?sctrn...):
+;      "xor a / call bnksel / jmp rutina", el salto de cola de siempre.
+;      No hace falta restaurar: las llama la BDOS bancada, que ya esta
+;      en sistema. Y ?sldsk/?sctrn DEVUELVEN valor en HL, que el
+;      envoltorio usa para saber a donde saltar.
+;
+;   c) ?mov y ?xmov usan "call ?bank" en vez de "call bnksel", a
+;      proposito, para que @cbnk conserve el banco del llamante y ?move
+;      pueda restaurarlo -- ver la nota junto a ?mov. (El resto sigue
+;      usando bnksel, que ademas de reprogramar el hardware actualiza
+;      @cbnk.)
+;
+;  ?boot es la excepcion restante: se ejecuta una sola vez, al arrancar,
+;  antes de que FULL_PAGING este activo; forzar un cambio de contexto
+;  ahi seria prematuro. El cuerpo real va mas abajo, DESPUES de "org
+;  SWITCHER_BASE" -- tiene que quedar duplicado tambien.
 ; ---------------------------------------------------------------------
 ;            public ?boot,?wboot,?const,?conin,?cono,?list,?auxo,?auxi
 ;            public ?home,?sldsk,?sttrk,?stsec,?stdma,?read,?write
@@ -186,7 +241,21 @@ map1blk:    push bc
 ;    ahi directamente al final con "jp (hl)" -- sin depender de una
 ;    pila que puede haber cambiado de pagina fisica bajo los pies.
 ; ---------------------------------------------------------------------
-?bank:      pop  hl                  ; direccion de retorno real del
+; CPM3_SD81: ?bank PRESERVA HL. Lo usa para su propio retorno (pop hl /
+; jp (hl)), asi que lo destruia -- y como bnksel/selmemf se invocan con
+; SALTO DE COLA desde sitios que devuelven valor en HL, el llamante
+; recibia la direccion de retorno en vez del resultado.
+;
+; Caso confirmado en hardware: bank$bdos acaba en "mvi a,1 / jmp selmemf",
+; y "parse:" (funcion 152) lee HL justo despues para saber por donde se
+; quedo el analisis. Recibia $F2CD (su propia direccion de retorno), la
+; traducia como si fuera un puntero al buffer comun y dejaba parsep
+; apuntando a codigo de la CCP: NINGUNA orden se reconocia.
+;
+; Mismo bug que ya se arreglo en ?mov, pero alli se parcheo el sintoma en
+; vez de la causa. Ahora se arregla aqui y vale para todos los llamantes.
+?bank:      ld   (bank$savehl), hl
+            pop  hl                  ; direccion de retorno real del
                                      ; llamante -- leida YA, antes de
                                      ; que el bucle reprograme el
                                      ; bloque donde vive (ver nota 2)
@@ -218,36 +287,80 @@ bank_loop:  ld   a,d
             pop  bc
             pop  af
             ld   sp, (bank$savesp)
-            ld   hl, (bank$retaddr)
-            jp   (hl)
+            jp   bank$exit       ; banco 7: restaura HL y salta
 
 ; ---------------------------------------------------------------------
 ;  Tabla de saltos del BIOS (duplicada -- ver la nota mas arriba, junto
 ;  a los "extrn"). ?boot es la unica sin cambio de contexto.
 ; ---------------------------------------------------------------------
+; =====================================================================
+;  biosw - envoltorio de las entradas de E/S de caracter.
+;
+;  PROBLEMA QUE RESUELVE. El resto de la tabla hace "xor a / call bnksel
+;  / jmp rutina": un SALTO de cola, asi que el "ret" de la rutina real
+;  vuelve al llamante ORIGINAL con "sistema" ya seleccionado. Desde fuera,
+;  pedir un caracter por consola te cambiaba el banco de forma permanente
+;  y silenciosa.
+;
+;  En el CP/M+ de DRI eso no pasa porque toda la E/S de caracter es
+;  residente (ver los cseg/dseg de BIOSKRNL.ASM) y no hay cambio de banco
+;  ninguno. Aqui el driver real (?co/?ci, chario.z80) vive en memoria
+;  bancada y no cabe en el banco 7, asi que reproducimos la GARANTIA en
+;  vez de la estructura: una llamada al BIOS no altera el banco visible.
+;
+;  Sintoma que lo destapo: la BDOS sondea ?cist mientras espera una tecla,
+;  asi que el sistema pasaba casi todo el tiempo en "sistema". La copia de
+;  vuelta de la funcion 10 ("jmp movef" al final de rb$func10) escribia
+;  entonces la linea leida en la pagina 0 en vez de en el buffer de la
+;  CCP: se veia lo tecleado (el eco lo hace la BDOS al editar) pero la CCP
+;  recibia un buffer sin actualizar, y toda orden daba "?".
+;
+;  DETALLE CRITICO: hay que cambiar a pila comun ANTES de tocar el
+;  paginado. La pila del llamante esta en su banco, asi que un push antes
+;  del cambio y su pop despues caerian en paginas fisicas distintas --
+;  exactamente el error que ya nos mordio en ?bank.
+;
+;  Solo se envuelven las entradas de caracter: intercambian datos por
+;  registros (caracter en C, resultado en A) y no usan HL, que es lo que
+;  el envoltorio necesita para saber a donde saltar. Las de disco NO se
+;  envuelven: las llama la BDOS bancada, que ya esta en "sistema", y
+;  ademas ?sldsk/?sctrn DEVUELVEN valor en HL.
+; =====================================================================
+biosw:      ld   (bw$sp), sp     ; SP del llamante
+            ld   sp, bw$stack    ; pila comun ANTES de tocar bancos
+            ld   (bw$hl), hl     ; ?bank destruye HL
+            ld   a, (@cbnk)
+            ld   (bw$bnk), a     ; banco del llamante
+            xor  a
+            call bnksel          ; -> sistema (conserva AF/BC/DE)
+            ld   hl, (bw$hl)
+            ld   de, bw$back
+            push de              ; direccion de vuelta, en la pila comun
+            jp   (hl)            ; llamar a la rutina real
+bw$back:    ld   (bw$a), a       ; valor devuelto
+            ld   a, (bw$bnk)
+            call bnksel          ; restaurar el banco del llamante
+            ld   a, (bw$a)
+            ld   sp, (bw$sp)     ; SP del llamante
+            ret                  ; vuelve ya bajo el banco correcto
+
 ?boot:      jmp  boot            ; unica excepcion, ver nota arriba
 
 ?wboot:     xor  a
             call bnksel
             jmp  wboot
-?const:     xor  a
-            call bnksel
-            jmp  const
-?conin:     xor  a
-            call bnksel
-            jmp  conin
-?cono:      xor  a
-            call bnksel
-            jmp  conout
-?list:      xor  a
-            call bnksel
-            jmp  list
-?auxo:      xor  a
-            call bnksel
-            jmp  auxout
-?auxi:      xor  a
-            call bnksel
-            jmp  auxin
+?const:     ld   hl, const
+            jmp  biosw
+?conin:     ld   hl, conin
+            jmp  biosw
+?cono:      ld   hl, conout
+            jmp  biosw
+?list:      ld   hl, list
+            jmp  biosw
+?auxo:      ld   hl, auxout
+            jmp  biosw
+?auxi:      ld   hl, auxin
+            jmp  biosw
 
 ?home:      xor  a
             call bnksel
@@ -271,22 +384,18 @@ bank_loop:  ld   a,d
             call bnksel
             jmp  write
 
-?lists:     xor  a
-            call bnksel
-            jmp  listst
+?lists:     ld   hl, listst
+            jmp  biosw
 ?sctrn:     xor  a
             call bnksel
             jmp  sectrn
 
-?conos:     xor  a
-            call bnksel
-            jmp  conost
-?auxis:     xor  a
-            call bnksel
-            jmp  auxist
-?auxos:     xor  a
-            call bnksel
-            jmp  auxost
+?conos:     ld   hl, conost
+            jmp  biosw
+?auxis:     ld   hl, auxist
+            jmp  biosw
+?auxos:     ld   hl, auxost
+            jmp  biosw
 ?dvtbl:     xor  a
             call bnksel
             jmp  devtbl
@@ -359,10 +468,8 @@ bank_loop:  ld   a,d
             ex   de,hl           ; HL=destino+n, DE=origen+n (orden CP/M)
             ret
 
-mov$bank:   ld   (bank$savehl), hl
-            xor  a
-            call ?bank
-            ld   hl, (bank$savehl)
+mov$bank:   xor  a
+            call ?bank           ; ?bank ya preserva HL (ver su nota)
             jmp  ?move
 ?tim:       xor  a
             call bnksel

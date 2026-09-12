@@ -337,25 +337,25 @@ switch0:
 	mov a,b
 	ret
 
-; CPM3_SD81: "badfunc" (funcion BDOS de disco fuera de rango) no tiene
-; definicion real en NINGUNA copia de esta fuente que hemos encontrado
-; (falta tambien en la version original, sin tocar) -- gap generico de
-; la reconstruccion Caldera/John Elliott, no algo que hayamos roto
-; nosotros. Es un caso raro (numero de funcion invalido); de momento
-; devuelve error via rb$sta$ret (que deja A=0FFh, convencion CP/M de
-; "no soportado") en vez de dejarlo sin definir -- sin verificar en
-; hardware real, sustituir si aparece algun problema con esto.
-badfunc:
-	mvi a,0ffh
-	jmp rb$sta$ret
+; CPM3_SD81: aqui habia un stub "badfunc" que devolvia $FF. Se puso
+; porque zmac daba ese simbolo por indefinido, y resulto ser un
+; ESPEJISMO: en los ensambladores de DRI (MAC/RMAC) el "$" dentro de un
+; identificador SE IGNORA -- es solo un separador de legibilidad. O sea
+; que "badfunc" (como lo escriben los saltos de disk$func, lineas 236-237
+; del fuente original) y "bad$func" (como esta escrita la etiqueta, linea
+; 339) son EL MISMO SIMBOLO para DRI. zmac los trata como distintos.
+;
+; El stub tapaba por tanto el manejador real, y con el la funcion 152
+; (parse filename): la CCP recibia un FCB sin tocar y NINGUNA orden se
+; reconocia. Los saltos apuntan ahora a bad$func.
 
 disk$func:
 	cpi ndf
 	jc OKdf ;func < ndf
 	cpi 98
-	jc badfunc ;ndf < func < 98
+	jc bad$func ;ndf < func < 98
 	cpi nxdf
-	jnc badfunc ;func >= nxdf
+	jnc bad$func ;func >= nxdf
 	cpi 111
 	jz rb$func111
 	cpi 112

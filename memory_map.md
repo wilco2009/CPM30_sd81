@@ -2003,3 +2003,147 @@ constantemente.
 **Lección**: un flag que se pone en un camino y se limpia en otro es
 seguro solo si el segundo camino se alcanza siempre. Aqui el propio flag
 cerraba la puerta por la que habia que salir a limpiarlo.
+
+
+---
+
+## Opcion B implementada: `biosw`, envoltorio de la E/S de caracter
+
+Sintoma que la hizo obligatoria: con el prompt en pantalla, **toda orden
+daba `?`** (`DIR` -> `DIR?`, `E:` -> `?`). El `?` es la respuesta normal
+de CP/M a "orden no encontrada", pero `DIR` es una orden interna y `E:`
+un cambio de unidad: ninguna deberia llegar ahi.
+
+La pista la dio volcar el buffer de consola de la CCP (`$0B4A`): salian
+**todo `$76`**, o sea el relleno de HALT de la pagina 0. Al pausar, el
+bloque 0 tenia la pagina 0 -- estabamos en **sistema**.
+
+Y no era casualidad del momento de pausa: mientras la BDOS espera una
+tecla **sondea `?cist` continuamente** a traves de la tabla de saltos, y
+esas entradas seleccionan sistema y **no lo restauran**. Asi que el
+sistema pasaba casi todo el tiempo en sistema. Entonces la copia de
+vuelta de la funcion 10 (`jmp movef` al final de `rb$func10`) escribia la
+linea leida en la pagina 0 en vez de en el buffer de la CCP: se veia lo
+tecleado (el eco lo hace la BDOS al editar) pero **la CCP recibia un
+buffer sin actualizar**, y de ahi que `eoc` encontrara basura y toda
+orden diera `?`.
+
+### Que hace
+
+Las 10 entradas de caracter pasan de `xor a / call bnksel / jmp rutina`
+(salto de cola) a `ld hl,rutina / jmp biosw` (mismo tamano). El
+envoltorio guarda el banco del llamante, cambia a sistema, **llama** a la
+rutina real y **restaura** el banco antes de volver.
+
+En el CP/M+ de DRI esto no hace falta porque toda la E/S de caracter es
+residente (ver los `cseg`/`dseg` de `BIOSKRNL.ASM`) y no hay cambio de
+banco ninguno. Aqui el driver real (`?co`/`?ci`, chario.z80) son 789
+bytes que no caben en el banco 7, asi que se reproduce la **garantia**
+("una llamada al BIOS no altera el banco visible") en vez de la
+estructura.
+
+**Detalle critico**: `biosw` cambia a pila comun ANTES de tocar el
+paginado. La pila del llamante esta en su banco, asi que un `push` antes
+del cambio y su `pop` despues caerian en paginas fisicas distintas --
+exactamente el error que ya nos mordio en `?bank`.
+
+Solo se envuelven las de caracter: intercambian datos por registros
+(caracter en `C`, resultado en `A`) y no usan `HL`, que es lo que el
+envoltorio necesita para saber a donde saltar. Las de disco no se
+envuelven -- las llama la BDOS bancada, que ya esta en sistema, y ademas
+`?sldsk`/`?sctrn` **devuelven** valor en `HL`.
+
+### Donde vive su estado
+
+En `$F880-$F8A7`, sobre los glifos de los codigos 16-20 de la tabla de
+fuentes -- la "reserva" del banco 7 que teniamos apuntada. `genfont.py`
+emite ahora desde el codigo 21 (`FIRST`). Reparto actual de ese hueco:
+
+| Rango | Uso |
+|---|---|
+| `$F800-$F87F` | `@bnkbf` (glifos 0-15) |
+| `$F880-$F8A7` | estado y pila de `biosw` (glifos 16-20) |
+| `$F8A8-$FFFF` | fuente real, codigos 21-255 |
+
+### Y un solapamiento silencioso corregido de paso
+
+La guarda de `bank.z80` rellenaba hasta `$F800`, pero `dfctbl`/`xdfctbl`
+(RESBDOS.ASM) estan en `$F7B8`: **se solapaban**. Funcionaba solo porque
+`RESBDOS.ASM` se ensambla despues y sus bytes ganaban. Ajustada a
+`ds 0F7B8h-$`. Tercera vez que aparece el mismo patron -- dos `org` que
+se pisan no dan ningun error.
+
+
+---
+
+## El `$` de DRI: un stub que suplantaba a la funcion 152
+
+Sintoma: con el prompt funcionando, **ninguna orden se reconocia**
+(`dir` -> `dir?`, `e:` -> `?`). El buffer de consola llegaba
+**correcto** (`80 03 64 69 72 00` = longitud 3, "dir", terminado), asi
+que la BDOS no tenia la culpa.
+
+Cuatro breakpoints en los puntos de decision de la CCP lo acotaron:
+
+| Punto | |
+|---|---|
+| `uc` (`$06B2`, conversion a mayusculas) | si para |
+| `ccpbuiltin` (`$026D`) | **nunca** |
+| `ccpdisk0` (`$029C`) | **nunca** |
+| `perror` (`$098E`) | si para |
+
+Y el volcado del FCB en `perror` dio el dato: `$0B02` = `00 00 FF FF FF
+...`. Usuario y unidad a cero (bien) pero **el nombre y el tipo sin
+tocar**. La funcion 152 (parse filename) no escribia nada, y con el tipo
+a `$FF` la CCP se iba por `ccpdisk2`, que no pasa por ninguno de los dos
+breakpoints del medio.
+
+**La causa.** En el fuente original de DRI:
+
+```
+linea 236:  cpi 98!   jc  badfunc     <- sin $
+linea 237:  cpi nxdf! jnc badfunc     <- sin $
+linea 339:  bad$func:                  <- con $
+```
+
+En los ensambladores de DRI (MAC/RMAC) **el `$` dentro de un identificador
+se ignora**: es solo un separador de legibilidad. Para DRI `badfunc` y
+`bad$func` son **el mismo simbolo**. `zmac` los trata como distintos, asi
+que `badfunc` quedaba indefinido -- y en una sesion anterior se "arreglo"
+anadiendo un stub que devolvia `$FF`.
+
+Ese stub **suplantaba al manejador real**, que es justo el que trata la
+funcion 152:
+
+```
+bad$func:
+	cpi 152
+	jz parse
+```
+
+Corregido: los saltos apuntan a `bad$func` y el stub fuera.
+
+### Auditoria: no hay mas casos
+
+Como el patron puede repetirse, se audito todo (`scratchpad/dollar.py`):
+buscar simbolos escritos de dos formas que solo varian en los `$`.
+
+Salen 40 grupos, pero **ninguno es un bug**:
+
+- **31** son parejas limpias "etiqueta + alias `equ`" (`out$delim equ
+  outdelim`...). Mismo valor, dos nombres: correcto.
+- **6** mas son alias explicitos del mismo tipo.
+- **Los 3 restantes** (`conmode`, `qflag`, `parsepw`...) aparecen en
+  `CCP3.ASM`, que **se ensambla por separado** -- solo su binario entra
+  en `system.z80` via `ccp_image.z80`. No comparten espacio de nombres, y
+  ademas los valores coinciden por los dos caminos (`conmode` es `$E0CF`
+  tanto como `scb$pg+0cfh` en BDOS.ASM como `pag$off+033h` en CCP3.ASM).
+
+`badfunc` era el unico caso donde, en vez de un alias, se habia anadido
+codigo propio.
+
+**Lección**: al portar fuente de DRI a un ensamblador moderno, un simbolo
+"indefinido" que solo se diferencia por los `$` NO se resuelve escribiendo
+una implementacion -- se resuelve con un alias, porque la implementacion
+ya existe con la otra grafia. Un stub ahi no falla: **suplanta**, que es
+mucho peor.
