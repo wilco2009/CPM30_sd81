@@ -54,8 +54,18 @@ BLINK_RATE  equ 25              ; pulsos de VSYNC por semiciclo de parpadeo
             cp   0FFh
             jr   nz,cst_yes         ; hay tecla normal
             bit  1,e                ; ENTER pulsado?
-            jr   z,cst_cur          ; no -> solo cursor
-            ld   a,(enter_used)     ; ENTER residual (ya dio simbolo)?
+            jr   nz,cst_ent
+            ; ENTER suelto: limpiar aqui el residual. Antes solo se
+            ; limpiaba en ck_clr (dentro de kbget), y eso era un bloqueo
+            ; mutuo: con enter_used=1 esta misma rutina responde "no hay
+            ; tecla", la BDOS no llega a llamar a ?ci, y por tanto ck_clr
+            ; no se ejecuta nunca -> el flag se quedaba a 1 para siempre.
+            ; Sintoma: despues del primer ENTER+tecla (simbolo), ni ENTER
+            ; ni SHIFT+ENTER volvian a responder.
+            xor  a
+            ld   (enter_used),a
+            jr   cst_cur
+cst_ent:    ld   a,(enter_used)     ; ENTER residual (ya dio simbolo)?
             or   a
             jr   z,cst_yes          ; no -> hay tecla (producira CR/CTRL)
 cst_cur:    push de

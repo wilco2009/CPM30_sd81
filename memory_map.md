@@ -1841,3 +1841,165 @@ conservarlas:
 
 Ni una línea de lógica cambia: todos los usos de `DFILE` son simbólicos
 y `ATTR_val` solo se referencia en el borrado de `?init`.
+
+---
+
+## Referencia: mapa completo de la página del SCB ($E000-$E0FF)
+
+Generado cruzando las tres fuentes que describen esa página. **Las tres
+concuerdan campo por campo**, lo que confirma que la base del SCB público
+es `$E09C` (`BDOS.ASM` usa `scb$pg+n` con `scb$pg=$E000`; `CCP3.ASM` usa
+`pag$off+n` con `pag$off=$9C`; `SCB.ASM` usa `scb$base+n`).
+
+Equivalencias que lo demuestran: `conin$rflg`=`@CIVEC`, `dmaad`=`@CRDMA`,
+`olddsk`=`@CRDSK`, `fx`=`@FX`, `multcnt`=`@MLTIO`, `errormode`=`@ERMDE`,
+`error`=`?ERJMP`, `bdosadd`=`top$tpa`=`@MXTPA`.
+
+La columna "quién lo pone" es lo que importa: lo que está **vacío** no lo
+inicializa nadie, y en un CP/M+ real lo dejaría puesto GENSYS.
+
+| Dir | BDOS.ASM | CCP3.ASM | SCB.ASM (DRI) | Quién lo pone |
+|---|---|---|---|---|
+| `$E090` | `olog` | `olog` | `—` |  |
+| `$E092` | `rlog` | `rlog` | `—` |  |
+| `$E098` | `—` | `bdosbase` | `—` |  |
+| `$E09C` | `SCB` | `hashl` | `—` |  |
+| `$E09D` | `hash` | `hash` | `—` |  |
+| `$E0A1` | `version` | `bdos$version` | `—` | CCP scbinit |
+| `$E0A2` | `util$flgs` | `util$flgs` | `—` |  |
+| `$E0A6` | `dspl$flgs` | `dspl$flgs` | `—` |  |
+| `$E0AA` | `clp$flgs` | `clp$flgs` | `—` |  |
+| `$E0AB` | `—` | `clp$drv` | `—` |  |
+| `$E0AC` | `clp$errcde` | `prog$ret$code` | `—` |  |
+| `$E0AE` | `ccp$comlen` | `multi$rsx$pg` | `—` |  |
+| `$E0AF` | `ccp$curdrv` | `ccpdrv` | `—` |  |
+| `$E0B0` | `ccp$curusr` | `ccpusr` | `—` |  |
+| `$E0B1` | `ccp$conbuff` | `ccpconbuf` | `—` |  |
+| `$E0B3` | `ccp$flgs` | `ccpflag1` | `—` |  |
+| `$E0B4` | `—` | `ccpflag2` | `—` |  |
+| `$E0B5` | `—` | `ccpflag3` | `—` |  |
+| `$E0B6` | `conwidth` | `conwidth` | `—` | ?init (COLS-1) |
+| `$E0B7` | `column` | `concolumn` | `—` |  |
+| `$E0B8` | `conpage` | `conpage` | `—` | ?init (ROWS) |
+| `$E0B9` | `conline` | `conline` | `—` |  |
+| `$E0BA` | `conbuffadd` | `conbuffer` | `—` |  |
+| `$E0BC` | `conbufflen` | `conbuffl` | `—` |  |
+| `$E0BE` | `conin$rflg` | `conin$rflg` | `@CIVEC` | ?init ($8000) |
+| `$E0C0` | `conout$rflg` | `conout$rflg` | `@COVEC` | ?init ($8000) |
+| `$E0C2` | `auxin$rflg` | `auxin$rflg` | `@AIVEC` | ?init ($8000) |
+| `$E0C4` | `auxout$rflg` | `auxout$rflg` | `@AOVEC` | ?init ($8000) |
+| `$E0C6` | `lstout$rflg` | `listout$rflg` | `@LOVEC` | ?init ($8000) |
+| `$E0C8` | `page$mode` | `page$mode` | `—` |  |
+| `$E0C9` | `pm$default` | `page$def` | `—` |  |
+| `$E0CA` | `ctlh$act` | `ctlh$act` | `—` |  |
+| `$E0CB` | `rubout$act` | `rubout$act` | `—` |  |
+| `$E0CC` | `type$ahead` | `type$ahead` | `—` |  |
+| `$E0CD` | `contran` | `contran` | `—` |  |
+| `$E0CF` | `conmode` | `con$mode` | `—` | CCP scbinit |
+| `$E0D1` | `—` | `ten$buffer` | `—` | ?init (puntero a @bnkbf) |
+| `$E0D3` | `outdelim` | `outdelim` | `—` | CCP scbinit |
+| `$E0D4` | `listcp` | `listcp` | `—` |  |
+| `$E0D5` | `qflag` | `q$flag` | `—` |  |
+| `$E0D6` | `scbadd` | `scbad` | `—` | ?init (scb$base) |
+| `$E0D8` | `dmaad` | `dmaad` | `@CRDMA` | BDOS (func 26 / reset) |
+| `$E0DA` | `olddsk` | `seldsk` | `@CRDSK` | BDOS |
+| `$E0DB` | `info` | `info` | `@VINFO` | BDOS |
+| `$E0DD` | `resel` | `resel` | `@RESEL` | BDOS |
+| `$E0DE` | `relog` | `relog` | `—` |  |
+| `$E0DF` | `fx` | `fx` | `@FX` | BDOS |
+| `$E0E0` | `usrcode` | `usrcode` | `@USRCD` | BDOS |
+| `$E0E1` | `dcnt` | `dcnt` | `—` | BDOS |
+| `$E0E3` | `—` | `searcha` | `—` | BDOS |
+| `$E0E5` | `searchl` | `searchl` | `—` | BDOS |
+| `$E0E6` | `multcnt` | `multcnt` | `@MLTIO` | CCP scbinit |
+| `$E0E7` | `errormode` | `errormode` | `@ERMDE` | CCP scbinit |
+| `$E0E8` | `searchchain` | `drv0` | `—` |  |
+| `$E0E9` | `—` | `drv1` | `—` |  |
+| `$E0EA` | `—` | `drv2` | `—` |  |
+| `$E0EB` | `—` | `drv3` | `—` |  |
+| `$E0EC` | `temp$drive` | `tempdrv` | `—` | BDOS |
+| `$E0ED` | `errdrv` | `patch$flag` | `@ERDSK` | BDOS |
+| `$E0F0` | `media$flag` | `—` | `@MEDIA` |  |
+| `$E0F3` | `bdos$flags` | `—` | `@BFLGS` |  |
+| `$E0F4` | `stamp` | `date` | `@DATE` |  |
+| `$E0F6` | `—` | `—` | `@HOUR` |  |
+| `$E0F7` | `—` | `—` | `@MIN` |  |
+| `$E0F8` | `—` | `—` | `@SEC` |  |
+| `$E0F9` | `commonbase` | `com$base` | `—` |  |
+| `$E0FB` | `error` | `error` | `?ERJMP` | ?init (jmp error$sub) |
+| `$E0FE` | `bdosadd` | `top$tpa` | `@MXTPA` | ?init (call5_entry) |
+
+Regenerar con `scratchpad/scbmap.py` si cambian los equates de alguno de
+los tres ficheros.
+
+### Estado del SCB: cerrado salvo un campo
+
+Verificado en hardware con el prompt en pantalla (volcado de
+`$E000-$E0FF`), todos los campos que `?init` inicializa llegan correctos:
+
+| Campo | Valor | |
+|---|---|---|
+| `?ERJMP` `$E0FB` | `C3 7C 8A` = `jmp error$sub` | ✓ |
+| `@MXTPA` `$E0FE` | `58 F7` = `call5_entry` | ✓ |
+| `@BNKBF` ptr `$E0D1` | `00 F8` = `$F800` | ✓ |
+| `scbadd` `$E0D6` | `9C E0` = `$E09C` | ✓ |
+| `conwidth` `$E0B6` | `4F` = 79 | ✓ |
+| `conpage` `$E0B8` | `18` = 24 | ✓ |
+| Los 5 vectores `$E0BE-$E0C7` | `00 80` ×5 | ✓ |
+| `outdelim` `$E0D3` (lo pone la CCP) | `24` = `'$'` | ✓ |
+| `bdos$version` `$E0A1` (idem) | `31` | ✓ |
+
+Anadido ademas **`commonbase` (`$E0F9`) = `$E000`**: la CCP guarda su
+byte alto en su variable `banked`, y con el campo a cero creia que el
+sistema no es bancado.
+
+De los ~40 campos que no inicializa nadie, en todos los demas el cero es
+un valor por defecto razonable (flags apagados, contadores a cero).
+
+Anadido tambien **`rubout$act` (`$E0CB`) = `$FF`**, a raiz de un sintoma
+de teclado que resulto no ser del teclado: `SHIFT+0` (DEL) *mostraba* el
+caracter en vez de borrarlo. La BDOS decide asi, en el editor de linea de
+la funcion 10:
+
+```
+cpi rubout / LDA RUBOUT$ACT / INR A / JZ DO$CTLH
+```
+
+Con `$FF` trata el `$7F` como retroceso y borra; con cualquier otro valor
+hace el *rubout* clasico de teletipo, que **imprime** el caracter
+borrado -- correcto sobre papel continuo, absurdo en pantalla.
+`ctlh$act` (`$E0CA`) se deja a 0, que es justo lo contrario y es lo
+deseado: Ctrl-H hace un retroceso normal.
+
+**Único pendiente: `bdosbase` (`$E098`)**. La CCP lo guarda en `realdos`
+y solo lo usa en la rutina XCOM, al cargar programas transitorios.
+Deliberadamente sin fijar: cae por debajo de la base del SCB publico
+(`scb$pg+$98`), la BDOS ni lo nombra, y no hay forma de comprobar el
+valor correcto hasta que se pueda ejecutar un `.COM`. Fijarlo entonces,
+con la prueba delante, en vez de adivinarlo ahora.
+
+
+---
+
+## Teclado: bloqueo mutuo entre `enter_used` y `?cist`
+
+Sintomas: tras probar "ENTER+tecla" (simbolos), **ni ENTER solo ni
+SHIFT+ENTER volvian a responder nunca**. Las teclas directas, SHIFT+tecla
+y ENTER+tecla seguian bien.
+
+`enter_used` (chario.z80) marca "este ENTER ya se consumio como
+modificador", para que al soltarlo no genere ademas un CR. Se pone a 1 en
+`ck_mods` y se limpiaba **solo** en `ck_clr`, que esta dentro de `kbget`.
+
+El bloqueo: con `enter_used`=1, **`?cist` responde "no hay tecla"** para
+ENTER. La BDOS solo llama a `?ci` cuando `?cist` dice que si, asi que
+`kbget` no llega a ejecutarse nunca -- y por tanto `ck_clr` tampoco. El
+flag se quedaba a 1 de forma permanente.
+
+Arreglado limpiando el residual en `?cist` cuando ENTER esta **suelto**,
+que es un estado que esa rutina si puede observar porque se sondea
+constantemente.
+
+**Lección**: un flag que se pone en un camino y se limpia en otro es
+seguro solo si el segundo camino se alcanza siempre. Aqui el propio flag
+cerraba la puerta por la que habia que salir a limpiarlo.

@@ -142,6 +142,27 @@ CMD_fullpaging equ 01Dh        ; 29
             ld   a, ROWS
             ld   (scb$base+1Ch), a       ; conpage   ($E0B8)
 
+            ; commonbase ($E0F9): direccion donde empieza la memoria
+            ; comun. La CCP se queda con su byte ALTO en su variable
+            ; "banked" (start: "mvi l,com$base+1 / mov a,m / sta banked"),
+            ; asi que con el campo a cero cree que el sistema NO es
+            ; bancado. Aqui la zona comun es el banco 7, $E000.
+            ld   hl, 0E000h
+            ld   (scb$base+5Dh), hl      ; commonbase ($E0F9)
+
+            ; rubout$act ($E0CB) = $FF: que DEL borre de verdad.
+            ; La BDOS decide asi (BDOS.ASM, editor de linea de la func 10):
+            ;   cpi rubout / LDA RUBOUT$ACT / INR A / JZ DO$CTLH
+            ; o sea con $FF trata el $7F como retroceso y BORRA; con
+            ; cualquier otro valor hace el "rubout" clasico de teletipo,
+            ; que IMPRIME el caracter que borra -- correcto en papel
+            ; continuo, absurdo en pantalla. Confirmado en hardware: con
+            ; el campo a cero, SHIFT+0 mostraba el caracter a borrar.
+            ; ctlh$act ($E0CA) se queda a 0, que es justo lo contrario y
+            ; es lo que queremos: Ctrl-H hace un retroceso normal.
+            ld   a, 0FFh
+            ld   (scb$base+2Fh), a       ; rubout$act ($E0CB)
+
             ; Fuente: la tabla real de 256 caracteres ya esta en $F800,
             ; ensamblada en su sitio (font_image.z80) y puesta ahi por el
             ; propio cargador -- no hay nada que copiar. Aqui solo hace
