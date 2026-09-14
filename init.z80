@@ -162,6 +162,35 @@ CMD_fullpaging equ 01Dh        ; 29
             ld   hl, 0E000h
             ld   (scb$base+5Dh), hl      ; commonbase ($E0F9)
 
+            ; --- campos del SCB que rellenaria GENSYS ---
+            ; Los tres los LEE la BDOS y no los escribe NADIE, asi que
+            ; sin esto se quedan a cero para siempre. Repaso completo del
+            ; bloque de equates en memory_map.md.
+
+            ; version ($E0A1): lo que devuelve la funcion 12 (S_BDOSVER).
+            ; "func12: lda version / jmp sta$ret" -- y a cero significa
+            ; "esto no es CP/M 3". Hay utilidades que comprueban >= 30h y
+            ; se niegan a arrancar. $31 es lo que responde un CP/M Plus.
+            ld   a, 031h
+            ld   (scb$base+05h), a
+
+            ; multcnt ($E0E6): contador multi-sector. La BDOS lo LEE en
+            ; tres sitios (lineas 249, 746, 800) y solo lo escribe la
+            ; funcion 44, o sea que lo consulta antes de que nadie lo
+            ; haya puesto. Y el comentario de DRI en la 247 es explicito:
+            ; "If mult$cnt ~= 1 then bd$read or bd$write commands" -- con
+            ; un cero entra por el camino multi-sector con contador cero.
+            ld   a, 1
+            ld   (scb$base+4Ah), a
+
+            ; outdelim ($E0D3): el delimitador de la funcion 9. "print"
+            ; (BDOS.ASM:1210) hace "LXI H,OUTDELIM / ldax b / CMP M / rz",
+            ; o sea compara contra el CONTENIDO del campo. A cero, la
+            ; funcion 9 no para en '$' sino en un byte nulo, y se come lo
+            ; que haya detras de la cadena hasta encontrar uno.
+            ld   a, '$'
+            ld   (scb$base+37h), a
+
             ; bdosbase ($E098 = scb$base-4): "real BDOS entry point".
             ; Otro campo de GENSYS que estaba a cero, y la CCP lo usa
             ; para DOS cosas distintas al lanzar un transitorio (xcom):

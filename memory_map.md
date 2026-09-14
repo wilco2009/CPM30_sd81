@@ -2986,3 +2986,328 @@ significa basura, y entonces se formatea.
 Con RAM aleatoria cada byte tiene un ~7% de parecer valido, asi que los
 256 a la vez son practicamente imposibles. Y no hay estado que mantener
 sincronizado, que es lo que suele romperse en los esquemas con firma.
+
+## Trampolin: la E/S de caracter sale del banco 7, entran los DPH
+
+Para que `BIOS SELDSK` y `DRVTBL` sirvan de algo hacian falta 207 bytes
+de banco comun, y solo quedaban 13. La reserva estaba escondida en un
+sitio que llevaba tiempo delante de las narices.
+
+### Una premisa que habia caducado
+
+DRI pone la E/S de caracter en `cseg` (memoria comun) para que un
+programa pueda llamar al BIOS **sin cambiar de banco**. Perfectamente
+razonable... hasta que metimos `biosw` delante de cada entrada de la
+tabla de saltos. El envoltorio ya selecciona sistema antes de saltar al
+cuerpo y restaura el banco del llamante al volver.
+
+O sea que el cuerpo de esas rutinas **llevaba tiempo sin necesitar ser
+comun**. Solo lo parecia, porque el comentario de DRI seguia ahi.
+
+Comprobados los dos caminos de entrada antes de moverlas:
+
+- `?const`/`?conin`/`?cono`/`?list`/`?auxo`/`?auxi`/`?conos`/`?auxis`/
+  `?auxos`/`?lists` pasan por `biosw`.
+- `?dvtbl`/`?drtbl` hacen `xor a / call bnksel` antes del salto.
+- Los alias de la BDOS (`conoutf equ ?cono`, `constf equ ?const`...)
+  apuntan a la **tabla**, no al cuerpo.
+
+Nadie llega ahi con el banco de usuario puesto.
+
+### El reparto nuevo del bloque comun
+
+| Se queda | Bytes |
+|---|---|
+| `boot$1`, `wboot` | 21 |
+| `set$jumps` (selecciona usuario a mitad) | 33 |
+| `boot$stack` | 56 |
+| `bnksel` | 6 |
+
+| Se va a `BKIOEXT` ($CC80, banco de sistema) | Bytes |
+|---|---|
+| `devtbl`, `getdrv` | 8 |
+| `conout`, `auxout`, `list`, `const`, `conin`, `auxin` | 30 |
+| `conost`, `auxost`, `listst`, `auxist` | 24 |
+| los cuatro `*$scan` con sus `*$next` | 90 |
+| `coster` + `xofflist` | 56 |
+| `cist1`, `cost1`, `ci1`, `ci$rdy`, `not$q`, `not$s` | 40 |
+
+**248 bytes recuperados.** `xofflist` estaba detras de `bnksel` en el
+fuente de DRI y se trae con `coster`, que es quien lo usa, para que el
+parentesis sea uno solo.
+
+### Y el banco 7 queda asi
+
+| Rango | Uso |
+|---|---|
+| `$F598-$F617` | `boot$1`, `wboot`, `set$jumps`, `boot$stack`, `bnksel` |
+| `$F618-$F703` | **`@dtbl` + los 5 XDPH/DPH** (207 B) |
+| `$F704-$F774` | `ldccp_real`, `ldc$copy`, `call5_entry` |
+| `$F775-$F7A3` | los dos DPB |
+| `$F7A4-` | variables de `?bank` |
+
+Cuatro bloques consecutivos, cada uno con su guarda `ds <siguiente>-$`, y
+ninguna direccion literal: `BKIOEXT`, `DTBLORG`, `DPBORG` y `LDR_BASE`
+salen todas de `memmap.inc`.
+
+### Por que el DPH no podia ir en la pagina del cargador
+
+Porque **no es de solo lectura**. Lleva 9 bytes de scratch y el byte MF
+que escribe la BDOS. La pagina del cargador esta "duplicada e identica"
+(la imagen en sistema, la copia en usuario), lo cual basta para datos
+inmutables como `@dtbl` o los DPB, pero no para algo que se escribe:
+habria dos copias divergiendo. Por eso hubo que liberar banco 7 de
+verdad en vez de aprovechar los 28 bytes libres de `$DDE4`.
+
+### Lo que sigue roto
+
+La funcion 27 (*get allocation vector address*) devuelve `ALV_BASE`, que
+esta en el banco de sistema. Son 1 KB y no caben en comun ni de lejos.
+
+## `ERASE.COM` escribia sobre la pagina cero: `searcha`
+
+`ERASE B:X.COM` desde A: funcionaba; `A:ERASE X.COM` desde B: colgaba la
+maquina. La diferencia no era la unidad: la primera forma usa el **ERASE
+interno de la CCP** y la segunda carga **ERASE.COM** como transitorio.
+Dos programas distintos.
+
+La traza de llamadas a la BDOS (BP en `$DD00`, que las ve todas) dejo el
+borrado fuera de sospecha:
+
+```
+$0F open  $3B P_LOAD  $0C $0C version  $6D $19 $20 $2D
+$1A DMA   $11 F_SFIRST(DE=006C)   $31 x6 F_SCB
+$0B       $1A         $13 F_DELETE   <- y VUELVE
+$1A       $31 x7 F_SCB              <- y aqui se acaba
+```
+
+El `$13` vuelve, o sea que el fichero se borra bien. Lo que mata la
+maquina viene despues:
+
+```
+$04D7  LD C,$47        ; offset $47 del SCB
+$04D9  CALL $06F6      ; leer campo del SCB (funcion 49)
+$04DC  LD ($0F3D),HL   ; HL = 0000
+...
+$061D  LD HL,($0F3D)   ; HL = 0000  -> destino
+$0621  LD BC,$006C
+$0625  LD A,(BC) / LD (DE),A / INC BC / INC DE / DEC L / JP NZ
+```
+
+16 bytes copiados a `$0000-$000F`, encima del `jp` de `$0005`. El
+siguiente `call 5` encuentra `20 20` (`JR NZ`) y descarrila. En el
+depurador se veia un deslizamiento por `00 39 00 39` con `SP=$0402`: la
+pila tambien destruida.
+
+### El campo
+
+Offset `$47` del SCB = `scb$pg+0E3h` = **`searcha`**, la direccion del FCB
+con el que la BDOS esta haciendo la busqueda de directorio en curso.
+
+`ERASE.COM` hace `F_SFIRST` con su FCB en `$006C` y luego pregunta por
+ese campo para saber si la BDOS esta usando ese mismo FCB. El codigo es
+defensivo:
+
+```
+$0613  CALL $0EAA      ; HL = $006C - (0F3D)
+$0616  OR L
+$0617  JP Z,$062D      ; si coinciden, no copiar
+```
+
+Con `searcha` = `$006C` la comprobacion salta y no se copia nada. Con
+`searcha` = 0 la resta da `$006C`, no salta, y copia a la direccion 0.
+
+### Por que estaba a cero
+
+Esto **venia de DRI**, no lo rompimos nosotros. En `CPMBDOS2.ASM:176`:
+
+```
+;searcha	equ	scb$pg+0e3h
+```
+
+...comentado. Y mas abajo, dentro de un `[if BANKED]`, `searcha` se
+declara como variable del **dseg** -- que en un sistema bancado vive en
+el banco de sistema. En nuestro mapa acabo en `$B2A0`. Ahi ningun
+programa puede leerla, y el campo `+47h` del SCB se queda a cero para
+siempre.
+
+El sitio estaba reservado: `dcnt` ocupa `$E0E1-$E0E2` y `searchl` empieza
+en `$E0E5`. Esos dos bytes estan libres exactamente para esto.
+
+Arreglo: descomentar el `equ` y quitar el `ds word` del dseg. De los 58
+campos del bloque de equates del SCB, era **el unico** comentado; los
+otros 57 ya apuntaban a la pagina comun.
+
+**Leccion**: de los campos del SCB que hemos tenido que arreglar --
+`?ERJMP`, la direccion del SCB, `conwidth`/`conpage`, `commonbase`,
+`rubout$act`, `bdosbase` y ahora `searcha` -- todos menos este eran
+trabajo de GENSYS que nos saltamos. Este es distinto: es un campo que
+la propia fuente de DRI deja muerto en la configuracion bancada. Merece
+la pena repasar el bloque entero buscando mas casos asi, en vez de
+seguir esperando a que tropiece la siguiente utilidad.
+
+## Repaso completo del SCB: las dos clases de campo muerto
+
+Tras lo de `searcha` convenia dejar de descubrir campos de uno en uno,
+cada vez que tropieza una utilidad nueva. Son dos problemas distintos y
+se buscan de forma distinta.
+
+### Pasada 1 -- campos que rellenaria GENSYS
+
+Metodo: para cada campo del bloque de equates, contar referencias en la
+BDOS y mirar si alguna ESCRIBE. Los que solo se leen necesitan valor
+inicial, y sin GENSYS ese valor no existe.
+
+| Campo | SCB+ | Valor | Por que |
+|---|---|---|---|
+| `version` | `+05` | `$31` | `func12` hace `lda version`. A cero, la funcion 12 responde "no soy CP/M 3" |
+| `multcnt` | `+4A` | `1` | La BDOS lo lee en 3 sitios y solo lo escribe la funcion 44. DRI: *"If mult$cnt ~= 1 then bd$read or bd$write commands"* |
+| `outdelim` | `+37` | `'$'` | `print` compara contra su CONTENIDO. A cero, la funcion 9 termina en un byte nulo en vez de en `'$'` |
+
+Ese ultimo es el mas silencioso de los tres: la funcion 9 sigue
+imprimiendo, solo que de mas, hasta encontrar un cero.
+
+Revisados los 58 campos. `errormode` (`+4B`), `ctlh$act` (`+2E`),
+`page$mode` (`+2C`) y `type$ahead` (`+30`) se quedan a cero **a
+proposito**: cero es su valor correcto por defecto. Los que ya
+poniamos (`?ERJMP`, `scbadd`, `conwidth`/`conpage`, `commonbase`,
+`rubout$act`, `bdosbase`, los cinco vectores de redireccion) siguen
+igual.
+
+### Pasada 2 -- campos que la fuente de DRI deja muertos
+
+Metodo distinto: no mirar `?init`, sino buscar **variables declaradas en
+el dseg de la BDOS cuyo nombre aparezca tambien como equate comentado
+hacia `scb$pg`**. Esas caen en el banco de sistema y el campo del SCB se
+queda sin dueno.
+
+Resultado: `searcha` era **el unico**, en `BDOS.ASM` y en el original
+`dri_src/CPMBDOS2.ASM`. Los otros 57 equates estan vivos.
+
+Comprobado ademas que el mapa de `$E000-$E0FF` no tiene huecos sin
+explicar: cada salto entre campos consecutivos corresponde al tamano
+real del campo anterior.
+
+**Leccion**: las dos pasadas encontraron cosas distintas y ninguna
+habria encontrado lo de la otra. La primera se contesta mirando quien
+ESCRIBE cada campo; la segunda, mirando donde ATERRIZA cada variable. Y
+la segunda solo es posible porque tenemos la fuente de DRI al lado para
+comparar.
+
+## `DEVICE` sacaba "6$" donde debia poner "CON": `@ctbl`
+
+`DEVICE` borraba la pantalla varias veces, imprimia texto sin sentido, y
+aun asi llegaba a su pregunta y salia bien con RETURN. El dato que lo
+resolvio estaba en el texto: donde tenia que ir el nombre del
+dispositivo salia **`6$`**.
+
+```
+CONIN:  = 6$          <- deberia ser "CONIN:  = CON"
+! NONE  X    6*D NONE  IS    n2: NONE  IX
+```
+
+`@ctbl` estaba en `$835C`, en el banco de sistema. `BIOS DEVTBL`
+(entrada 20) devuelve esa direccion al programa, que la lee desde el
+banco de **usuario** y encuentra TPA.
+
+Y los borrados de pantalla eran el mismo problema: entre la basura que
+imprimia habia bytes `$1A`, que nuestro `?co` interpreta como
+*clear screen*. Una sola causa para los dos sintomas.
+
+### El fallo de la auditoria anterior
+
+En el repaso de estructuras que entrega la BDOS o el BIOS, `devtbl`
+figuraba como correcto:
+
+| Estructura | Donde vive | Estado |
+|---|---|---|
+| `devtbl` | `$F606` comun | ~~OK~~ |
+
+Se comprobo **la rutina**, no **la tabla que la rutina devuelve**. La
+rutina es `lxi h,@ctbl / ret`: lo que el programa lee no es ella, es
+`@ctbl`. Mismo despiste que con el DPB, y en la misma lista.
+
+La version corregida de esa auditoria:
+
+| Entrada | Devuelve | Donde vivia | Estado |
+|---|---|---|---|
+| BDOS 31 | DPB | sistema | movido a `$F775` |
+| BDOS 49 | campos del SCB | comun | OK |
+| BDOS 27 | ALV | sistema | **sigue roto** (1 KB, no cabe) |
+| BIOS 9 SELDSK | DPH | sistema | movido a `$F618` |
+| BIOS 20 DEVTBL | **`@ctbl`** | sistema | movido a `$F797` |
+| BIOS 22 DRVTBL | `@dtbl` | sistema | movido a `$F618` |
+| BIOS 16 SECTRAN | XLT del DPH | -- | vale 0, sin tabla de skew |
+
+**Leccion**: la pregunta correcta no es "¿esta la rutina en memoria
+comun?" sino "¿que direccion acaba en manos del programa, y puede
+leerla desde su banco?". Una rutina que devuelve un puntero no protege
+nada por estar bien colocada.
+
+## `DEVICE`, segunda parte: la funcion 50 estaba rota a proposito
+
+Mover `@ctbl` a memoria comun no arreglo nada: seguia saliendo `6$`. Y
+un breakpoint en `devtbl` (la rutina del BIOS) **no disparaba nunca**, o
+sea que `DEVICE` no llegaba a ella por ningun camino.
+
+La razon estaba en `BDOS.ASM`, y escrita a mano por nosotros:
+
+```
+; func50 queda roto a proposito -- es una funcion BDOS rara, de muy
+; bajo uso (acceso directo al BIOS saltandose la BDOS). Alias solo
+; para que compile; NO llamar a funcion 50.
+bios	equ	?boot
+```
+
+La **funcion 50** (llamada directa al BIOS) calcula la entrada asi:
+
+```
+	lxi h,bios
+	add l
+	mov l,a        ; bios + 3*numero_de_funcion
+```
+
+...o sea que da por hecho **zancada de 3 bytes**. Es el mismo supuesto
+que rompio a Turbo Pascal, solo que desde dentro de la BDOS en vez de
+desde el programa. Con `bios = ?boot` (la tabla real, de zancada
+variable), `bios + 3*20` cae a mitad de una entrada.
+
+`DEVICE` pide la tabla de dispositivos con `func50`+`BIOS 20`. De ahi los
+nombres tipo `6$` y los borrados de pantalla, que eran bytes `$1A`
+sueltos entre la basura.
+
+El arreglo es una linea, porque la tabla de zancada fija ya existe desde
+que arreglamos lo de Turbo Pascal:
+
+```
+bios	equ	BIOSTBL
+```
+
+`bios$tbl` existe identica en los dos bancos, asi que vale para el
+programa (via `$0001`) y para la BDOS.
+
+### Y de paso, `badfunc` otra vez
+
+En el mismo bloque:
+
+```
+dirbios4	equ	dir$bios2
+```
+
+`dir$bios4` **existe**, unas lineas debajo de `dir$bios3`. Pero el salto
+de `func50` la escribe `dirbios4`, sin el `$`, y en MAC/RMAC el `$`
+dentro de un identificador se ignora -- son el mismo simbolo. zmac los
+trata como distintos, y alguien "resolvio" el simbolo indefinido
+aliasandolo a `dir$bios2`, **suplantando el manejador real**.
+
+Es el mismo bug que `badfunc`/`bad$func` en `RESBDOS.ASM`, con la misma
+forma: no falla, suplanta. `dir$bios4` es el post-proceso de una llamada
+directa a SELDSK, que traduce el DPH devuelto.
+
+No se habia notado porque `func50` estaba rota de todas formas.
+
+**Leccion**: "roto a proposito porque casi nadie lo usa" es una apuesta,
+y esta se perdio. Cuando la nota que justifica dejar algo roto dice "de
+muy bajo uso", conviene anotar que sigue pendiente en vez de darlo por
+cerrado -- sobre todo si, como aqui, la pieza que falta acaba
+apareciendo por otro motivo un mes despues.

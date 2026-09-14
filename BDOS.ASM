@@ -180,7 +180,21 @@ relog 		equ	scb$pg+0deh
 fx		equ	scb$pg+0dfh
 usrcode		equ	scb$pg+0e0h
 dcnt		equ	scb$pg+0e1h
-;searcha	equ	scb$pg+0e3h
+; CPM3_SD81: DESCOMENTADO. Venia asi de DRI (CPMBDOS2.ASM:176), y mas
+; abajo, dentro de un "[if BANKED]", searcha se declaraba como variable
+; del dseg -- o sea en el banco de sistema ($B2A0 en nuestro mapa), no
+; en la pagina del SCB. Efecto: el campo +47h del SCB, que la guia del
+; sistema documenta como "search address", se queda a cero para siempre.
+;
+; Y hay programas que lo leen. ERASE.COM hace F_SFIRST con su FCB en
+; $006C y acto seguido pide el +47h para saber con que FCB esta buscando
+; la BDOS. Si le devuelve $006C, comprueba que ya esta donde quiere y no
+; hace nada. Si le devuelve 0, copia 16 bytes a la direccion 0 -- encima
+; del "jp" de $0005 -- y el siguiente "call 5" salta a basura.
+;
+; Los dos bytes estan reservados para esto: dcnt ocupa $E1-$E2 y searchl
+; empieza en $E5.
+searcha		equ	scb$pg+0e3h
 searchl		equ	scb$pg+0e5h
 multcnt		equ	scb$pg+0e6h
 errormode	equ	scb$pg+0e7h
@@ -8207,7 +8221,10 @@ dminx:	ds	byte	; local for diskwrite
 ; CPM3_SD81: [endif] (linea 10195)
 ; CPM3_SD81: [if BANKED] resuelto en preprocesado (BANKED=1,MPM=0) -> activo
 
-searcha:ds	word	; search address
+; CPM3_SD81: searcha ya no se declara aqui -- es un "equ" a la pagina
+; del SCB (scb$pg+0e3h, ver arriba). Declararla tambien aqui daria
+; "Mult. def.", y ademas es justo el bug: en el dseg cae en el banco de
+; sistema, donde ningun programa puede leerla.
 
 ; CPM3_SD81: [endif] (linea 10200)
 
@@ -9281,10 +9298,21 @@ user0pass	equ	user0$pass
 ; solo por la funcion 50 "Direct BIOS call" para calcular entradas por
 ; aritmetica de offset) no tiene equivalente real: nuestra tabla de
 ; saltos (bank.z80) no es de zancada fija (cada entrada mide lo que
-; mide, no siempre 3 B). func50 queda roto a proposito -- es una
-; funcion BDOS rara, de muy bajo uso (acceso directo al BIOS saltandose
-; la BDOS). Alias solo para que compile; NO llamar a funcion 50.
-bios	equ	?boot
+; mide, no siempre 3 B).
+;
+; CPM3_SD81: ARREGLADO. Esto apuntaba a ?boot y la nota de arriba decia
+; "func50 queda roto a proposito -- funcion de muy bajo uso, NO llamar".
+; La apuesta salio mal: DEVICE.COM la usa para pedir la tabla de
+; dispositivos (BIOS 20, DEVTBL). Como func50 calcula "bios + 3*n",
+; caia a mitad de una entrada y devolvia basura -- de ahi los nombres
+; de dispositivo tipo "6$" y los borrados de pantalla (algun $1A suelto
+; entre la basura, que ?co interpreta como clear screen).
+;
+; Ahora hay tabla de zancada fija: bios$tbl (loader.z80), 33 "jp" de 3
+; bytes, la misma que usamos para $0001 desde que Turbo Pascal tropezo
+; con lo mismo. Existe identica en los dos bancos, asi que vale tanto
+; para el programa como para la BDOS.
+bios	equ	BIOSTBL
 ; xdmaad y srch$hash van en bdos_full.z80, DESPUES de "include
 ; RESBDOS.ASM" -- apuntan a nombres que RESBDOS.ASM define (xdmaadd,
 ; rb$search$hash), y como referencia hacia delante (RESBDOS.ASM va
@@ -9299,11 +9327,20 @@ setenddir	equ	set$end$dir
 read$n0	equ	readn0
 do$new$line	equ	do$newline
 out$delim	equ	outdelim
-; dirbios4 (BDOS30.ASM, funcion 50 "Direct BIOS call", rara vez usada):
-; falta directamente en la fuente -- solo existen dir$bios1/2/3. Por la
-; logica del salto (cpi 9 / jnz dir$bios2 -- si es igual, cae directo
-; aqui), lo mas razonable es que apunte a dir$bios2; sin verificar contra
-; hardware real, es una funcion de muy bajo uso.
-dirbios4	equ	dir$bios2
+; dirbios4: OTRO caso de la regla del "$". En MAC/RMAC el "$" dentro de
+; un identificador se IGNORA, asi que "dirbios4" (como lo escribe el
+; salto de func50) y "dir$bios4" (como esta escrita la etiqueta, unas
+; lineas debajo de dir$bios3) son EL MISMO SIMBOLO para DRI. zmac los
+; trata como distintos, y el alias de antes -- "dirbios4 equ dir$bios2"
+; -- suplantaba el manejador real.
+;
+; Es exactamente el mismo bug que ya tuvimos con badfunc/bad$func en
+; RESBDOS.ASM, y con las mismas consecuencias: no falla, SUPLANTA.
+; dir$bios4 es el post-proceso de una llamada directa a SELDSK (BIOS 9),
+; que traduce el DPH devuelto; con el alias corria dir$bios2 en su lugar.
+;
+; No se noto antes porque func50 estaba rota de todas formas (ver "bios
+; equ" mas arriba). Al arreglarla, esto pasa a importar.
+dirbios4	equ	dir$bios4
 
 		end

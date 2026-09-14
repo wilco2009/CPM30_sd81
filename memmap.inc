@@ -121,3 +121,65 @@ ALV_RAM      equ 14       ; (DSM/4)+2 con DSM=48    -- unidad E
 ; DPB_SD chocaria con la etiqueta dpb_sd: de drvtbl.z80 (misma trampa que
 ; BIOSTBL/bios$tbl). Solo hace falta la direccion base.
 DPBORG       equ 0F775h   ; dpb_sd y dpb_ram, 17 bytes cada uno
+
+; ---------------------------------------------------------------------
+;  Bloque de E/S de caracter de BIOSKRNL, FUERA del banco 7.
+;
+;  DRI lo puso en "cseg" (memoria comun) para que un programa pudiera
+;  llamar al BIOS directamente sin cambiar de banco. Esa premisa dejo de
+;  aplicar el dia que metimos "biosw" delante de cada entrada de la
+;  tabla: el envoltorio YA selecciona sistema antes de saltar al cuerpo y
+;  restaura el banco del llamante al volver. O sea que el cuerpo llevaba
+;  tiempo sin necesitar ser comun -- solo lo parecia.
+;
+;  Son 248 bytes de banco 7 recuperados: devtbl, getdrv, conout, auxout,
+;  list, const, conin, auxin, conost, auxost, listst, auxist, los cuatro
+;  *$scan con sus *$next, y coster + xofflist.
+;
+;  Se queda en comun lo que de verdad lo necesita: boot$1, wboot,
+;  set$jumps (selecciona usuario en mitad de su ejecucion), boot$stack y
+;  bnksel.
+;
+;  Va detras de los ALV. La guarda de system.z80 para en BKIOEXT para no
+;  rellenarle encima, y la de aqui cierra hasta LDR_BASE.
+; ---------------------------------------------------------------------
+BKIOEXT      equ 0CC80h   ; detras de los ALV ($C800 + 1042 = $CC12)
+
+; ---------------------------------------------------------------------
+;  @dtbl y los XDPH/DPH, en el hueco que deja la E/S de caracter al
+;  mudarse (BKIOEXT). Tienen que ser comunes:
+;
+;    - BIOS SELDSK (entrada 9) devuelve al programa la direccion del DPH.
+;      Es como un programa de CP/M 2.2 llega al DPB, al ALV y al CSV.
+;    - BIOS DRVTBL (entrada 22) devuelve la de @dtbl.
+;
+;  Y a diferencia del DPB, el DPH NO es de solo lectura: tiene 9 bytes de
+;  scratch y el byte MF que escribe la BDOS. Asi que no vale con que este
+;  "duplicado e identico" -- tiene que ser comun de verdad, una sola
+;  copia. De ahi que hiciera falta liberar banco 7 y no bastara con la
+;  pagina del cargador.
+;
+;  207 bytes: 32 de @dtbl + 5 XDPH de 35.
+;
+;  Guardas a los dos lados: BIOSKRNL cierra su bloque comun con
+;  "ds DTBLORG-$" y este bloque con "ds 0F704h-$", que es donde empieza
+;  ldccp_real (init.z80).
+; ---------------------------------------------------------------------
+DTBLORG      equ 0F618h
+
+; ---------------------------------------------------------------------
+;  @ctbl -- la tabla de dispositivos de caracter, EN BANCO COMUN.
+;
+;  BIOS DEVTBL (entrada 20) devuelve su direccion al programa. Estaba en
+;  chario.z80, o sea en $835C del banco de sistema, y DEVICE.COM la leia
+;  desde el banco de usuario: donde tenia que salir "CON" salia "6$", y
+;  algun $1A de la basura hacia que ?co borrara la pantalla.
+;
+;  Mismo fallo que el DPB, el DPH y @dtbl. En la auditoria anterior se
+;  dio por bueno porque la RUTINA "devtbl" estaba en comun -- pero lo que
+;  el programa lee no es la rutina, es la TABLA que devuelve.
+;
+;  Son 9 bytes (6 de nombre + modo + baudios + terminador) y de solo
+;  lectura. Caben en el hueco que quedaba detras de los DPB.
+; ---------------------------------------------------------------------
+CTBLORG      equ 0F797h

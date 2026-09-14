@@ -256,6 +256,31 @@ set$jumps:
 boot$stack	equ $
 
 
+
+; =====================================================================
+;  E/S de caracter -- FUERA del banco 7 (BKIOEXT, memmap.inc).
+;
+;  DRI la puso en "cseg" para que un programa pudiera llamar al BIOS sin
+;  cambiar de banco. Esa premisa dejo de aplicar cuando metimos "biosw"
+;  delante de cada entrada de la tabla (bank.z80): el envoltorio YA
+;  selecciona sistema antes de saltar aqui y restaura el banco del
+;  llamante al volver. Comprobados los dos caminos de entrada:
+;
+;    - ?const/?conin/?cono/?list/?auxo/?auxi/?conos/?auxis/?auxos/?lists
+;      pasan por biosw.
+;    - ?dvtbl/?drtbl hacen "xor a / call bnksel" antes del salto.
+;
+;  Y los alias de la BDOS (conoutf equ ?cono, etc.) apuntan a la tabla,
+;  no al cuerpo. Nadie llega aqui con el banco de usuario puesto.
+;
+;  248 bytes de banco 7 recuperados, que es lo que hacia falta para
+;  meter ahi los DPH y @dtbl.
+; =====================================================================
+
+bkio$save equ $              ; posicion en banco 7, se retoma al cerrar
+
+	org BKIOEXT
+
 	; DEVTBL
 	;	Return address of character device table
 
@@ -499,6 +524,19 @@ ci$rdy:
 	pop h		; discard extra stack
 	jmp ?ci
 
+; xofflist estaba detras de bnksel en el fuente de DRI. Se trae aqui
+; porque lo usa "coster", que acaba de mudarse -- asi el parentesis es
+; uno solo en vez de dos.
+xofflist	db	-1,-1,-1,-1,-1,-1,-1,-1		; ctl-s clears to zero
+		db	-1,-1,-1,-1,-1,-1,-1,-1
+
+; Guarda: detras empieza el cargador de transitorios. Y rellena hasta
+; alli, que es memoria de sistema sin usar.
+	ds LDR_BASE-$
+
+	org bkio$save
+
+
 
 ;	Utility Subroutines
 
@@ -610,14 +648,15 @@ bnksel:
 					; physical bank select routine
 
 
-xofflist	db	-1,-1,-1,-1,-1,-1,-1,-1		; ctl-s clears to zero
-		db	-1,-1,-1,-1,-1,-1,-1,-1
 
-; CPM3_SD81: guarda de tamano -- el siguiente bloque del banco 7 es
-; ldccp_real (init.z80, $F704). Si este se pasara, lo pisaria en
-; silencio; con esto el "ds" sale negativo y el ensamblado falla.
+; CPM3_SD81: guarda de tamano. Antes rellenaba hasta $F704 (ldccp_real,
+; init.z80); ahora para en DTBLORG, porque el hueco que dejo la E/S de
+; caracter al mudarse a BKIOEXT lo ocupan @dtbl y los XDPH/DPH -- que
+; TIENEN que ser comunes porque BIOS SELDSK y DRVTBL devuelven sus
+; direcciones a los programas. Ver memmap.inc y drvtbl.z80.
+; Del tramo DTBLORG..$F704 se encarga la guarda de drvtbl.z80.
 
-	ds 0F704h-$
+	ds DTBLORG-$
 
 
 

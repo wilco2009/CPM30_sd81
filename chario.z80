@@ -40,10 +40,24 @@ BLINK_RATE  equ 25              ; pulsos de VSYNC por semiciclo de parpadeo
 ; ---------------------------------------------------------------------
             include "modebaud.lib"
 
+; CPM3_SD81: @ctbl va en BANCO COMUN. BIOS DEVTBL devuelve su direccion
+; al programa, que la lee desde el banco de usuario -- aqui, en el banco
+; de sistema, DEVICE.COM leia TPA y sacaba "6$" donde debia poner "CON".
+; Ver la nota en memmap.inc. Es de solo lectura y ocupa 9 bytes, asi que
+; cabe en el hueco que quedaba detras de los DPB.
+
+chario$save equ $            ; ver el "org" de cierre mas abajo
+
+            org  CTBLORG
+
 @ctbl:      defb 'CON   '
             defb mb$in$out
             defb baud$none
             defb 0                  ; terminador de tabla
+
+            ds   0F7A4h-$        ; guarda: detras, las variables de ?bank
+
+            org  chario$save
 
 ; ---------------------------------------------------------------------
 ;  ?ci/?co/?cist/?cost/?cinit - contrato de BIOSKRNL (B=dispositivo,

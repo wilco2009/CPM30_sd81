@@ -126,7 +126,10 @@ srch$hash	equ	rb$search$hash
 ; ---------------------------------------------------------------------
             ds   ALV_BASE-$
             ds   4*ALV_SD + ALV_RAM
-            ds   LDR_BASE-$
+            ds   BKIOEXT-$       ; para AQUI, no en LDR_BASE: detras esta
+                                  ; el bloque de E/S que BIOSKRNL.ASM ya
+                                  ; escribio con su propio "org", y este
+                                  ; "ds" se lo rellenaria encima.
 
 ; Cargador de transitorios. Va DESPUES de init.z80 porque salta a
 ; call5_entry, y despues de ccp_image.z80 porque se ensambla en $DF00,
