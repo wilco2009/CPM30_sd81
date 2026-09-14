@@ -762,7 +762,30 @@ setdma:
 	mov h,b
 	shld @dma
 
-	lda @cbnk	; default DMA bank is current bank
+; CPM3_SD81: era "lda @cbnk". La semantica original (ver el comentario de
+; DRI justo arriba) es "el banco de DMA por defecto es el banco del que
+; LLAMA", y con el BIOS de DRI eso era @cbnk porque a setdma se llegaba
+; sin tocar el paginado. Aqui no: ?stdma pasa por biosd, que hace
+; "xor a / call bnksel" -- y bnksel es "sta @cbnk / jmp ?bank", asi que
+; cuando se ejecuta esta linea @cbnk YA vale 0. Resultado: @dbnk = 0
+; siempre, o sea "el DMA esta en el banco de sistema".
+;
+; No se nota con la BDOS (que efectivamente llama desde el banco 0, y
+; ademas corrige con setbnkf justo despues de cada seek), pero SI con los
+; programas que llaman al BIOS por la tabla de $0001: el sector se les
+; copia al banco de sistema en vez de a su buffer. Caso real: el RSX
+; DIRLBL de SET.COM, que lee el directorio con SELDSK/SETTRK/SETSEC/
+; SETDMA/READ y nunca llama a SETBNK -- veia su buffer vacio, no
+; encontraba ninguna SFCB ($21) y soltaba "Directory needs to be
+; re-formatted... Please see INITDIR" sobre un disco perfectamente
+; formateado (y de paso volcaba el sector encima del propio XIOS).
+;
+; BD_BNK es el banco del llamante, que biosd guarda antes de conmutar;
+; vive en banco 7, asi que se lee igual bajo cualquier paginado. Para la
+; BDOS vale 0 igual que antes (no cambia nada); para un programa vale 1,
+; que es justo lo que hace DRI en el post-proceso de la funcion 50
+; ("cpi 12 / lxi d,dir$bios3" -> "mvi a,1 / jmp setbnkf", BDOS.ASM:7541).
+	lda BD_BNK	; default DMA bank is current bank
 			; fall through to set DMA bank
 
 	; SETBNK

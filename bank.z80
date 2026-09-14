@@ -361,22 +361,48 @@ bank_loop:  ld   a,d
 ;  arreglo, y eso ademas es lo que permite que ?sldsk y ?sctrn sigan
 ;  devolviendo su resultado en HL.
 ; =====================================================================
-biosd:      ld   (BD_SP), sp     ; pila comun ANTES de tocar bancos
+; OJO CON LOS REGISTROS. La primera version apilaba la direccion de
+; vuelta con "ld de,bd$back / push de", y eso DESTRUYE DE -- que es un
+; parametro de entrada de dos de las ocho rutinas:
+;
+;   seldsk  recibe en E el indicador de primer select ("mov a,e / ani 1
+;           / jnz not$first$select"). Con E de basura se saltaba el
+;           login, A.IMG no se abria nunca, DISKHANDLE se quedaba en $FF
+;           y toda lectura posterior daba error de E/S.
+;   sectran recibe en DE el puntero a la tabla de skew.
+;
+; biosw lleva meses con ese mismo patron sin dar guerra porque las
+; rutinas de caracter solo reciben C. biosd es el primer envoltorio que
+; cubre rutinas con parametros en DE.
+;
+; Asi que la direccion de vuelta se apila con HL, que de todas formas
+; hay que recargar desde BD_RT. DE y BC llegan intactos.
+biosd:      ld   (bd$sp), sp     ; pila comun ANTES de tocar bancos
             ld   sp, boot$stack
+            ld   (BD_RT), hl     ; la rutina real, que ahora usa HL
             ld   a, (@cbnk)
             ld   (BD_BNK), a
             xor  a
-            call bnksel          ; sistema; ?bank preserva HL
-            ld   de, bd$back
-            push de
+            call bnksel          ; sistema; ?bank preserva BC, DE y HL
+            ld   hl, bd$back
+            push hl
+            ld   hl, (BD_RT)
             jp   (hl)
 
 bd$back:    ld   (BD_A), a
             ld   a, (BD_BNK)
-            call bnksel          ; devolver al llamante su banco
+            call bnksel          ; devolver al llamante su banco. ?bank
+                                  ; preserva HL, que es como seldsk y
+                                  ; sectran devuelven su resultado.
             ld   a, (BD_A)
-            ld   sp, (BD_SP)
+            ld   sp, (bd$sp)
             ret
+
+; bd$sp puede vivir aqui, en la zona duplicada, porque se escribe y se
+; lee en el MISMO banco: el "ld sp" de vuelta va despues de haber
+; restaurado el del llamante. Estar duplicada no molesta, y libera los
+; dos bytes de banco 7 que necesita BD_RT.
+bd$sp:      defw 0
 
 ; =====================================================================
 ;  biosw - envoltorio de las entradas de E/S de caracter.

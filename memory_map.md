@@ -3505,3 +3505,95 @@ se esta trazando es el transitorio o la CCP. Un transitorio que falla
 nada mas arrancar devuelve el control a la CCP, y a partir de ahi lo que
 se ve es codigo de la CCP en las mismas direcciones donde estaba el
 programa.
+
+## `SET` pedia INITDIR sobre un disco ya formateado: `@dbnk` en `setdma`
+
+Con las SFCB ya funcionando, `SET C:[create=on,update=on]` contestaba:
+
+```
+ERROR: Directory needs to be re-formatted for time/date stamps.
+       Please see INITDIR.
+```
+
+...sobre un `C.IMG` que, inspeccionado desde el anfitrion, tenia las 64
+SFCB en su sitio (una cada cuatro entradas, en 3, 7, 11...), la etiqueta
+`$20` en la entrada 40 con modo `$31`, y fechas reales grabadas.
+
+### No era el disco, y no era la BDOS
+
+Un BP en `func100` (`$B0A6`, *Set Directory Label*) **no saltaba nunca**.
+La comprobacion no la hace la BDOS: la hace el RSX **`DIRLBL`** que
+`SET.COM` lleva dentro, y que intercepta la funcion 100 antes de que
+llegue a la BDOS.
+
+Sobre el binario se ve el bucle, en el offset `$90` del modulo:
+
+```
+0181: call 02B6        ; trae el registro de directorio
+0187: lxi d,0020h      ; 32 = tamano de entrada
+018E: dad d            ; bucle: hl += 32
+018F: mov a,m
+0190: cpi 21h          ; ¿SFCB?
+0192: jz  01AB         ;   si -> todo correcto
+019E: jnz 018E
+01A5: jnz 0222         ; -> el mensaje
+```
+
+Y lo importante: **`DIRLBL` lee el directorio por BIOS directo**, con la
+tabla de saltos de `$0001`, no por la BDOS. Sus thunks son todos de la
+forma `lxi d,<off> / lhld 0001 / dad d / lxi d,0 / pchl`:
+
+| offset | entrada | funcion |
+|---|---|---|
+| `+$18` | 9 | SELDSK |
+| `+$1B` | 10 | SETTRK |
+| `+$1E` | 11 | SETSEC |
+| `+$21` | 12 | SETDMA |
+| `+$24` | 13 | READ |
+| `+$27` | 14 | WRITE |
+
+**No hay `+$51` (SETBNK, entrada 28) en ninguna parte del modulo.** O sea
+que `DIRLBL` no dice nunca en que banco esta su buffer: da por hecha la
+semantica que el propio DRI documenta en `setdma` (BIOSKRNL.ASM):
+
+> *Set Disk Memory Address. Saves DMA address from `<BC>` in `@DMA` and
+> **sets `@DBNK` to `@CBNK`** so that further disk operations take place
+> in current bank.*
+
+Es la misma regla que DRI aplica a mano en el post-proceso de la funcion
+50 (`BDOS.ASM:7541`): si la funcion BIOS pedida es la 12 (SETDMA), apila
+`dir$bios3`, que es `mvi a,1 / jmp setbnkf` -- "el DMA esta en el banco
+de USUARIO".
+
+### Lo que la rompia
+
+`?stdma` pasa por `biosd`, y `biosd` hace `xor a / call bnksel` para
+ponerse en sistema. Pero `bnksel` es `sta @cbnk / jmp ?bank`: **cuando
+`setdma` ejecutaba `lda @cbnk`, ya valia 0**.
+
+Resultado: `@dbnk = 0` siempre. Con `@dma = $8245` (el buffer de
+`DIRLBL`, en el banco de usuario) y `@dbnk = @cbnk = 0`, `xfer$out` ni
+siquiera conmutaba el paginado: copiaba los 128 bytes a `$8245` **del
+banco de sistema**, que es codigo del propio XIOS (`sd_read` esta en
+`$8047`). `DIRLBL` escaneaba un buffer que nunca se rellenaba.
+
+Con la BDOS no se notaba porque efectivamente llama desde el banco 0, y
+ademas corrige con `setbnkf` justo despues de cada `seek` -- el orden es
+siempre SETDMA y luego SETBNK, en los cuatro sitios.
+
+El arreglo es una linea: `lda @cbnk` -> `lda BD_BNK`, el banco del
+llamante que `biosd` ya guarda en banco 7. Para la BDOS vale 0 igual que
+antes; para un programa vale 1, que es lo que quiere DRI.
+
+**Leccion**: `biosd` resuelve el cambio de banco de las entradas de
+disco, pero al hacerlo **destruye el contexto que algunas rutinas de
+DRI leen como dato**. `@cbnk` dejo de significar "el banco del que
+llama" en cuanto metimos un cambio de paginado por delante. Cualquier
+rutina del BIOS que consulte `@cbnk` hay que revisarla con esa lente, y
+usar `BD_BNK` en su lugar.
+
+**Y una tecnica**: la tabla `bios$tbl` (`$DC80`) es un punto de ruptura
+limpio para aislar a los programas que llaman al BIOS por `$0001`. La
+BDOS entra por las direcciones reales de las rutinas, asi que un BP en
+una entrada de la tabla **solo lo dispara un transitorio**. Aqui,
+`$DCA7` (READ) sirvio para pillar a `DIRLBL` sin ruido de fondo.

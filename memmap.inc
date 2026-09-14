@@ -215,6 +215,17 @@ RTCORG       equ 0CE00h
 ;  se arreglo. biosw todavia tiene su bw$hl porque se escribio antes de
 ;  aquello, y se queda como esta para no tocar lo que ya funciona.
 ; ---------------------------------------------------------------------
-BD_SP        equ 0F7A0h   ; SP del llamante
-BD_BNK       equ 0F7A2h   ; su banco, para restaurarlo
+; OJO con el reparto: no todas pueden vivir en el mismo sitio. Depende de
+; en que banco se escribe cada una y en cual se lee:
+;
+;   bd$sp   se escribe y se lee en el banco del LLAMANTE (el "ld sp"
+;           de vuelta va despues de restaurarlo) -> le vale la ZONA
+;           DUPLICADA, y por eso vive alli (bank.z80) en vez de aqui.
+;   BD_RT   se escribe en el banco del llamante y se lee bajo sistema.
+;   BD_A    se escribe bajo sistema y se lee en el del llamante.
+;
+; Las dos ultimas cruzan el cambio de banco, asi que tienen que ser
+; comunes de verdad -- una sola copia.
+BD_RT        equ 0F7A0h   ; direccion de la rutina real (2 B)
+BD_BNK       equ 0F7A2h   ; banco del llamante, para restaurarlo
 BD_A         equ 0F7A3h   ; valor devuelto en A
