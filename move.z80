@@ -20,9 +20,9 @@
 ;            public ?move,?xmove,?time
 ;            extrn  @cbnk,?bank,@bnkbf   ; @bnkbf ahora lo define SCB.ASM
 
-; ?time - pendiente: sin RTC real integrado todavia (el firmware del
-; MCU tiene RTC.cpp, pero aun no esta conectado aqui). Por ahora no-op.
-?time:      ret
+; ?time ya no esta aqui: el reloj de verdad vive en rtc.z80, que se
+; incluye DESPUES de diskio.z80 para que mcu_send/mcu_recv (sddisk.z80)
+; le queden como referencia hacia atras.
 
 ; Las variables de ?xmove/?move (xmv$dbnk/xmv$sbnk/mv$de/mv$hl/mv$cnt/
 ; mv$len) y el cuerpo de ?move viven ahora en bank.z80 -- las primeras en

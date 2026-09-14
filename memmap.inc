@@ -183,3 +183,16 @@ DTBLORG      equ 0F618h
 ;  lectura. Caben en el hueco que quedaba detras de los DPB.
 ; ---------------------------------------------------------------------
 CTBLORG      equ 0F797h
+
+; ---------------------------------------------------------------------
+;  rtc.z80, fuera del hueco apretado del XIOS.
+;
+;  El tramo $8000-$89FF (entre BIOSKRNL y el "org 08A00h" de BDOS.ASM) ya
+;  iba al limite, y el reloj son unos 450 bytes. Va detras del bloque de
+;  E/S de caracter (BKIOEXT), en el mismo banco de sistema.
+;
+;  Guardas encadenadas: BIOSKRNL cierra su bloque con "ds RTCORG-$" y
+;  este con "ds LDR_BASE-$", asi que ningun "ds" rellena encima del
+;  siguiente.
+; ---------------------------------------------------------------------
+RTCORG       equ 0CE00h

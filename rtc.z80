@@ -1,0 +1,431 @@
+; =====================================================================
+;  rtc.z80 - ?time: reloj de tiempo real via MCU (comando 50).
+;
+;  CONTRATO (CP/M 3 System Guide, entrada 26 del BIOS):
+;    C = 0    leer: actualizar @DATE/@HOUR/@MIN/@SEC del SCB
+;    C = 0FFh poner: cargar el reloj desde esos mismos campos
+;
+;    @DATE  (word) dias desde el 1 de enero de 1978, siendo ese dia el 1
+;    @HOUR  (byte) hora en BCD
+;    @MIN   (byte) minuto en BCD
+;    @SEC   (byte) segundo en BCD
+;
+;  El BDOS los usa para sellar los ficheros con fecha de creacion y
+;  modificacion, que es algo que CP/M 3 hace y CP/M 2.2 no.
+;
+;  PROTOCOLO CON EL MCU (COMMANDS.cpp, cmd_rtc, indice 50 de la tabla):
+;
+;    Z80 -> 50           comando
+;    MCU <- ToggleClock  (ACK)
+;    Z80 -> 0            param_len = 0 significa "dame la hora"
+;    MCU -> 22 bytes     "yyyy-mm-dd hh:mm:ss.cc"
+;    MCU -> 1 byte       estado (0 = bien)
+;    MCU <- ToggleClock  (final)
+;
+;  Dos envios y veintitres recepciones, o sea la misma forma que
+;  sd_fread. Y OJO: el MCU traduce la cadena a codigos ZX81 con
+;  asc_to_asc81 antes de mandarla, asi que los digitos NO llegan en
+;  ASCII sino en $1C..$25 (GLOBALS.cpp). El valor numerico de cada uno
+;  es "byte - $1C". Los separadores se ignoran: las posiciones son fijas.
+;
+;    posicion  0123 4 56 7 89 A BC D EF G HI J KL
+;    contenido yyyy - mm - dd _ hh : mm : ss . cc
+;
+;  Hay un "delay(1)" por byte en el firmware, asi que cada lectura cuesta
+;  unos 22 ms. La aritmetica de aqui abajo es despreciable al lado.
+; =====================================================================
+
+;            extrn  sd_clk,mcu_send,mcu_recv   (sddisk.z80, via diskio.z80)
+;            extrn  @DATE,@HOUR,@MIN,@SEC      (SCB.ASM)
+
+RTC_CMD     equ 50               ; indice de cmd_rtc en la tabla del MCU
+RTC_LEN     equ 22               ; "yyyy-mm-dd hh:mm:ss.cc"
+ZX_ZERO     equ 01Ch             ; codigo ZX81 del digito '0'
+
+; OJO con los registros: la BDOS da por hecho que esta entrada NO toca
+; HL ni DE. El comentario de DRI lo dice en el propio llamante
+; (BDOS.ASM:6582): "mvi c,0 / call timef ; does not modify hl,de".
+; El cuerpo de aqui abajo los usa todos, asi que se salvan aqui.
+; Todo este fichero va a RTCORG (memmap.inc), fuera del hueco apretado
+; del XIOS -- ver la nota alli. El "org" de cierre esta al final.
+rtc$save    equ $
+
+            org  RTCORG
+
+?time:      ld   a,c
+            or   a
+            jr   nz, rtc_put     ; C = 0FFh -> poner el reloj
+            push hl
+            push de
+            push bc
+            call rtc_read
+rt_back:    pop  bc
+            pop  de
+            pop  hl
+            ret
+
+; C = 0FFh: poner el reloj desde los campos del SCB.
+rtc_put:    push hl
+            push de
+            push bc
+            call rtc_write
+            jr   rt_back
+
+; ---------------------------------------------------------------------
+;  Leer: MCU -> rtc_buf -> campos del SCB
+; ---------------------------------------------------------------------
+rtc_read:   call sd_clk              ; C = reloj de referencia
+            ld   a,RTC_CMD
+            call mcu_send
+            xor  a
+            call mcu_send            ; param_len = 0
+
+            ld   hl,rtc_buf
+            ld   b,RTC_LEN
+rr_loop:    call mcu_recv
+            ld   (hl),a
+            inc  hl
+            djnz rr_loop
+            call mcu_recv            ; estado
+            or   a
+            ret  nz                  ; el MCU se quejo: dejar el SCB como estaba
+
+; --- ano: 4 digitos -> HL ---
+            ld   hl,0
+            ld   de,rtc_buf
+            ld   b,4
+ry_loop:    call hl_x10
+            ld   a,(de)
+            sub  ZX_ZERO
+            add  a,l
+            ld   l,a
+            jr   nc,ry_nc
+            inc  h
+ry_nc:      inc  de
+            djnz ry_loop
+            ld   (rtc_year),hl
+
+; --- dias = 365*(ano-1978) ---
+            ld   de,-1978
+            add  hl,de
+            ld   a,l                 ; ano relativo; cabe en 8 bits
+            ld   hl,0
+            or   a
+            jr   z,rd_noyr
+            ld   de,365
+rd_yr:      add  hl,de
+            dec  a
+            jr   nz,rd_yr
+rd_noyr:
+
+; --- mas un dia por cada bisiesto ya pasado ---
+; Bisiestos en [1978, ano-1]: el primero es 1980, asi que son
+; (ano-1977)/4. Comprobado: 1978->0, 1981->1, 2026->12. La regla simple
+; de "divisible por 4" vale de 1901 a 2099, que nos sobra.
+            push hl
+            ld   hl,(rtc_year)
+            ld   de,-1977
+            add  hl,de
+            srl  h
+            rr   l
+            srl  h
+            rr   l                   ; HL = (ano-1977)/4
+            ex   de,hl
+            pop  hl
+            add  hl,de
+
+; --- mas los dias de los meses anteriores ---
+            ld   a,(rtc_buf+5)
+            sub  ZX_ZERO
+            ld   c,a
+            add  a,a
+            add  a,a
+            add  a,c
+            add  a,a                 ; A = decena*10
+            ld   c,a
+            ld   a,(rtc_buf+6)
+            sub  ZX_ZERO
+            add  a,c                 ; A = mes (1-12)
+            ld   (rtc_month),a
+
+            dec  a
+            add  a,a                 ; *2: la tabla es de palabras
+            ld   e,a
+            ld   d,0
+            push hl
+            ld   hl,rtc_cum
+            add  hl,de
+            ld   e,(hl)
+            inc  hl
+            ld   d,(hl)
+            pop  hl
+            add  hl,de
+
+; --- y un dia mas si el ano en curso es bisiesto y ya paso febrero ---
+            ld   a,(rtc_year)        ; basta el byte bajo para "mod 4"
+            and  3
+            jr   nz,rd_nofeb
+            ld   a,(rtc_month)
+            cp   3
+            jr   c,rd_nofeb
+            inc  hl
+rd_nofeb:
+
+; --- mas el dia del mes ---
+            ld   a,(rtc_buf+8)
+            sub  ZX_ZERO
+            ld   c,a
+            add  a,a
+            add  a,a
+            add  a,c
+            add  a,a
+            ld   c,a
+            ld   a,(rtc_buf+9)
+            sub  ZX_ZERO
+            add  a,c
+            ld   e,a
+            ld   d,0
+            add  hl,de
+
+            ld   (@DATE),hl        ; ojo: @DATE es un "equ" a direccion
+
+; --- hora, minuto y segundo, en BCD ---
+            ld   de,rtc_buf+11
+            call rtc_bcd
+            ld   (@HOUR),a
+            ld   de,rtc_buf+14
+            call rtc_bcd
+            ld   (@MIN),a
+            ld   de,rtc_buf+17
+            call rtc_bcd
+            ld   (@SEC),a
+            ret
+
+; rtc_bcd - DE apunta a dos digitos ZX81 consecutivos; devuelve el par
+; empaquetado en BCD en A.
+rtc_bcd:    ld   a,(de)
+            sub  ZX_ZERO
+            add  a,a
+            add  a,a
+            add  a,a
+            add  a,a                 ; decena al nibble alto
+            ld   c,a
+            inc  de
+            ld   a,(de)
+            sub  ZX_ZERO
+            or   c
+            ret
+
+; hl_x10 - HL = HL*10, sin tocar DE ni BC.
+hl_x10:     push de
+            ld   d,h
+            ld   e,l
+            add  hl,hl               ; x2
+            add  hl,hl               ; x4
+            add  hl,de               ; x5
+            add  hl,hl               ; x10
+            pop  de
+            ret
+
+; Dias acumulados antes de cada mes en un ano normal. Enero=0, y el
+; ajuste de bisiesto se suma aparte (ver arriba) para no duplicar tabla.
+rtc_cum:    defw 0,31,59,90,120,151,181,212,243,273,304,334
+
+; =====================================================================
+;  Poner el reloj: campos del SCB -> cadena -> MCU
+;
+;  Es la lectura al reves. La parte incomoda es deshacer @DATE: hay que
+;  ir restando anos y luego meses, porque no hay division. Comprobado en
+;  Python contra las 44.560 fechas de 1978 a 2099, ida y vuelta, sin una
+;  sola discrepancia.
+;
+;  La hora no hace falta convertirla: @HOUR/@MIN/@SEC ya vienen en BCD,
+;  asi que cada nibble ES el digito. Las centesimas se mandan a "00": el
+;  SCB no las tiene.
+;
+;  Protocolo (cmd_rtc con param_len <> 0):
+;    Z80 -> 50 ; 22 ; los 22 bytes ; MCU -> estado
+;  El firmware los pasa por asc81_to_ascii, asi que hay que mandarlos en
+;  codigos ZX81 -- igual que llegan al leer.
+;
+;  LIMITACION DEL FIRMWARE: cmd_rtc hace "year %= 100" antes de guardar,
+;  y rtc_get_time devuelve "getYear()+2000". O sea que el MCU solo
+;  entiende el siglo XXI. Poner una fecha anterior al 2000 la devolveria
+;  con 2000 sumados: el 1998 volveria como 2098. No se corrige aqui
+;  porque el sitio de arreglarlo es el firmware.
+; =====================================================================
+ZX_MINUS    equ 016h             ; '-'  en codigos ZX81
+ZX_COLON    equ 00Eh             ; ':'
+ZX_DOT      equ 01Bh             ; '.'
+ZX_SPACE    equ 000h             ; ' '
+
+rtc_write:  ld   hl,(@DATE)
+            ld   a,h
+            or   l
+            ret  z               ; sin fecha valida: no tocar el reloj
+
+; --- deshacer @DATE: restar anos completos ---
+            ld   de,1978
+rw_year:    ld   a,e
+            and  3
+            ld   bc,365
+            jr   nz,rw_y1
+            ld   bc,366          ; bisiesto
+rw_y1:      push hl
+            or   a
+            sbc  hl,bc
+            jr   z,rw_ydone      ; ultimo dia del ano
+            jr   c,rw_ydone
+            pop  af              ; descartar la copia sin restar
+            inc  de
+            jr   rw_year
+rw_ydone:   pop  hl              ; HL = dia dentro del ano (1..366)
+            ld   (rtc_year),de
+
+; --- y ahora meses ---
+            ld   de,rtc_mdays
+            ld   b,1
+rw_mon:     ld   a,(de)
+            ld   c,a
+            ld   a,b
+            cp   2
+            jr   nz,rw_m1
+            ld   a,(rtc_year)    ; el byte bajo basta para "mod 4"
+            and  3
+            jr   nz,rw_m1
+            inc  c               ; febrero de bisiesto
+rw_m1:      ld   a,h
+            or   a
+            jr   nz,rw_sub       ; HL > 255, seguro que pasa de mes
+            ld   a,l
+            cp   c
+            jr   c,rw_mdone
+            jr   z,rw_mdone      ; ultimo dia del mes
+rw_sub:     ld   a,l
+            sub  c
+            ld   l,a
+            jr   nc,rw_ns
+            dec  h
+rw_ns:      inc  b
+            inc  de
+            jr   rw_mon
+rw_mdone:   ld   a,b             ; B = mes
+            ld   (rtc_month),a
+            ld   a,l             ; L = dia
+            ld   (rtc_day),a
+
+; --- montar "yyyy-mm-dd hh:mm:ss.cc" en codigos ZX81 ---
+            ld   hl,rtc_buf
+            ld   de,(rtc_year)
+            call put4
+            ld   (hl),ZX_MINUS
+            inc  hl
+            ld   a,(rtc_month)
+            call put2
+            ld   (hl),ZX_MINUS
+            inc  hl
+            ld   a,(rtc_day)
+            call put2
+            ld   (hl),ZX_SPACE
+            inc  hl
+            ld   a,(@HOUR)
+            call put_bcd
+            ld   (hl),ZX_COLON
+            inc  hl
+            ld   a,(@MIN)
+            call put_bcd
+            ld   (hl),ZX_COLON
+            inc  hl
+            ld   a,(@SEC)
+            call put_bcd
+            ld   (hl),ZX_DOT
+            inc  hl
+            ld   (hl),ZX_ZERO    ; centesimas: el SCB no las tiene
+            inc  hl
+            ld   (hl),ZX_ZERO
+
+; --- mandarla ---
+            call sd_clk
+            ld   a,RTC_CMD
+            call mcu_send
+            ld   a,RTC_LEN
+            call mcu_send        ; param_len = 22
+            ld   hl,rtc_buf
+            ld   b,RTC_LEN
+rw_send:    ld   a,(hl)
+            call mcu_send        ; preserva HL y B
+            inc  hl
+            djnz rw_send
+            call mcu_recv        ; estado
+            ret
+
+; put4 - DE = valor 0..9999, HL = destino. Escribe 4 digitos y avanza HL.
+put4:       ld   bc,-1000
+            call put_dig
+            ld   bc,-100
+            call put_dig
+            ld   bc,-10
+            call put_dig
+            ld   a,e
+            add  a,ZX_ZERO
+            ld   (hl),a
+            inc  hl
+            ret
+
+; put2 - A = valor 0..99, HL = destino. Dos digitos.
+put2:       ld   d,0
+            ld   e,a
+            ld   bc,-10
+            call put_dig
+            ld   a,e
+            add  a,ZX_ZERO
+            ld   (hl),a
+            inc  hl
+            ret
+
+; put_dig - resta BC (negativo) de DE mientras quepa, contando. Deja el
+; digito en (HL) y avanza HL. El acarreo de "add hl,bc" con BC negativo
+; queda PUESTO cuando el resultado sigue siendo positivo.
+put_dig:    ld   a,ZX_ZERO
+pd_loop:    push hl
+            ld   h,d
+            ld   l,e
+            add  hl,bc
+            jr   nc,pd_done
+            ld   d,h
+            ld   e,l
+            pop  hl
+            inc  a
+            jr   pd_loop
+pd_done:    pop  hl
+            ld   (hl),a
+            inc  hl
+            ret
+
+; put_bcd - A en BCD, HL = destino. Cada nibble YA es un digito.
+put_bcd:    push af
+            rrca
+            rrca
+            rrca
+            rrca
+            and  0Fh
+            add  a,ZX_ZERO
+            ld   (hl),a
+            inc  hl
+            pop  af
+            and  0Fh
+            add  a,ZX_ZERO
+            ld   (hl),a
+            inc  hl
+            ret
+
+rtc_mdays:  defb 31,28,31,30,31,30,31,31,30,31,30,31
+
+rtc_buf:    defs RTC_LEN
+rtc_year:   defs 2
+rtc_month:  defs 1
+rtc_day:    defs 1
+
+            ds   LDR_BASE-$      ; guarda: detras, el cargador
+
+            org  rtc$save

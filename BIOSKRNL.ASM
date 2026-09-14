@@ -530,9 +530,10 @@ ci$rdy:
 xofflist	db	-1,-1,-1,-1,-1,-1,-1,-1		; ctl-s clears to zero
 		db	-1,-1,-1,-1,-1,-1,-1,-1
 
-; Guarda: detras empieza el cargador de transitorios. Y rellena hasta
-; alli, que es memoria de sistema sin usar.
-	ds LDR_BASE-$
+; Guarda: detras viene rtc.z80 (RTCORG). Rellena hasta alli, que es
+; memoria de sistema sin usar. Del tramo RTCORG..LDR_BASE se encarga la
+; guarda de rtc.z80.
+	ds RTCORG-$
 
 	org bkio$save
 

@@ -3311,3 +3311,113 @@ y esta se perdio. Cuando la nota que justifica dejar algo roto dice "de
 muy bajo uso", conviene anotar que sigue pendiente en vez de darlo por
 cerrado -- sobre todo si, como aqui, la pieza que falta acaba
 apareciendo por otro motivo un mes despues.
+
+## El reloj: `?time` (rtc.z80)
+
+`?time` era un `ret` desde el principio. Ahora habla con el RTC del MCU.
+
+### El contrato
+
+Entrada 26 del BIOS: `C=0` leer, `C=0FFh` poner. Al leer hay que
+actualizar cuatro campos del SCB:
+
+| Campo | SCB+ | Formato |
+|---|---|---|
+| `@DATE` | `+58` | palabra, dias desde el 1-1-1978 (ese dia es el 1) |
+| `@HOUR` | `+5A` | BCD |
+| `@MIN` | `+5B` | BCD |
+| `@SEC` | `+5C` | BCD |
+
+Y hay un requisito que no esta en la guia sino en un comentario del
+llamante (`BDOS.ASM:6582`):
+
+```
+	mvi	c,0
+	call	timef ; does not modify hl,de
+```
+
+**`?time` tiene que preservar HL y DE.** El cuerpo los usa todos, asi
+que se salvan en la entrada.
+
+### El protocolo
+
+`cmd_rtc` es el comando **50** del MCU. Para leer: dos envios y
+veintitres recepciones, la misma forma que `sd_fread`.
+
+```
+Z80 -> 50           comando
+MCU <- ToggleClock  (ACK)
+Z80 -> 0            param_len = 0 significa "dame la hora"
+MCU -> 22 bytes     "yyyy-mm-dd hh:mm:ss.cc"
+MCU -> 1 byte       estado
+MCU <- ToggleClock  (final)
+```
+
+La trampa: el firmware traduce la cadena con `asc_to_asc81` antes de
+mandarla, asi que **los digitos no llegan en ASCII sino en codigos
+ZX81** (`$1C`-`$25`, GLOBALS.cpp). El valor numerico es `byte - $1C`.
+Los separadores se ignoran porque las posiciones son fijas.
+
+Cuesta unos 22 ms por lectura: el firmware hace `delay(1)` por byte. La
+aritmetica del lado Z80 es despreciable al lado de eso.
+
+### La conversion de fecha
+
+```
+dias = 365*(ano-1978) + (ano-1977)/4 + acumulado[mes] + dia
+       + 1 si el ano en curso es bisiesto y ya paso febrero
+```
+
+`(ano-1977)/4` cuenta los bisiestos ya pasados: el primero es 1980.
+Comprobado 1978->0, 1981->1, 2026->12. La regla simple de "divisible
+por 4" vale de 1901 a 2099, que sobra.
+
+Verificado contra las 44.560 fechas entre el 1-1-1978 y el 31-12-2099:
+**cero discrepancias**. El maximo, 44560, cabe holgado en la palabra.
+
+### Lo que falta
+
+**Poner la hora (`C=0FFh`) no esta.** Exige la conversion inversa --
+dias desde 1978 de vuelta a ano/mes/dia, que es un bucle de restas -- y
+formatear los 22 bytes. Mientras tanto `DATE SET` no hace nada, pero
+tampoco estropea la hora que ya lleva el MCU.
+
+Y para que `DIR [FULL]` ensene fechas hace falta ademas que el disco
+tenga entradas SFCB, que las crea `INITDIR`. Leer la hora es condicion
+necesaria, no suficiente.
+
+### Poner la hora
+
+`C=0FFh` ya esta. Es la lectura al reves, y la parte incomoda es
+deshacer `@DATE`: sin division, hay que ir restando anos completos (365
+o 366) y luego meses. Verificado en Python **ida y vuelta** sobre las
+44.560 fechas de 1978 a 2099, sin una discrepancia.
+
+La hora no hace falta convertirla: `@HOUR`/`@MIN`/`@SEC` ya vienen en
+BCD, asi que **cada nibble ES el digito** -- `put_bcd` es cuatro
+instrucciones. Las centesimas se mandan a `00` porque el SCB no las
+tiene.
+
+**Limitacion del firmware**: `cmd_rtc` hace `year %= 100` al guardar y
+`rtc_get_time` devuelve `getYear()+2000`, asi que el MCU solo entiende
+el siglo XXI. Poner una fecha anterior al 2000 la devolveria con 2000
+sumados. El sitio de arreglar eso es el firmware, no el XIOS.
+
+### Y el ano que enseña `DATE`
+
+`DATE` muestra `Mon 09/14/<6`. Dia de la semana, mes, dia y hora
+correctos; el ano sale `<6` en vez de `26`.
+
+No es fallo nuestro: `DATE.COM` calcula el ano como *anos desde 1900* --
+2026 da **126** -- y lo mete en un campo de dos digitos. `'0'+12` es
+`$3C`, que es `<`. En 1983 eso daba `83` y cabia.
+
+**Una maquina CP/M 3 real en 2026 mostraria exactamente lo mismo.** El
+formato de fecha de CP/M 3 aguanta hasta 2157 en su palabra de 16 bits;
+el limite esta en las utilidades. Los sellos de fichero no se ven
+afectados.
+
+Se descarto desfasar el reloj 28 anos (1998 y 2026 tienen calendarios
+identicos, comprobado mes a mes) porque eso seria apartarse de lo que
+hace una maquina real para que una utilidad de 1983 quede contenta. Si
+alguna vez molesta, el sitio de arreglarlo es `DATE.COM`.

@@ -83,6 +83,10 @@ bms_wait:   in   a,(0AFh)
             include "bank.z80"
             include "move.z80"
             include "diskio.z80"
+
+; El reloj va DESPUES de diskio.z80: usa mcu_send/mcu_recv/sd_clk, que
+; los define sddisk.z80 al final de ese fichero.
+            include "rtc.z80"
             include "drvtbl.z80"
             include "chario.z80"
             include "init.z80"
