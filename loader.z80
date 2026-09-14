@@ -88,12 +88,73 @@ ldr$entry:  ld   a,c
             ld   c, 15               ; F_OPEN
             call ldr$bdos
             inc  a                   ; $FF -> 0
-            jr   z, ldr$err
+            jp   z, ldr$err
 
             ld   hl, (ldr$fcb)
             ld   de, 32              ; FCB+32 = CR
             add  hl, de
+            ld   (ldr$cr), hl        ; guardar el puntero al campo CR
             ld   (hl), 0
+
+; =====================================================================
+;  ¿Es un .COM con prefijo RSX?
+;
+;  CP/M 3 permite que un .COM lleve modulos residentes dentro. Se
+;  reconoce porque el primer byte es $C9 (RET): asi, ejecutado en un
+;  CP/M 2.2, el programa sale sin hacer estropicios en vez de correr
+;  codigo que no entiende.
+;
+;  Formato, deducido midiendo los cinco que trae el disco (SET, GET,
+;  PUT, SAVE, SUBMIT) -- ver la tabla en memory_map.md:
+;
+;    +$00      $C9
+;    +$01..02  longitud del cuerpo del programa
+;    +$0F      numero de modulos RSX
+;    +$10...   un descriptor de 16 B por modulo
+;
+;  Los primeros 256 bytes del fichero son la cabecera y se descartan. A
+;  partir de ahi el fichero mapea 1:1 con memoria desde $0100: primero
+;  el cuerpo (tantos bytes como diga +$01) y detras los modulos.
+;
+;  Truco para no necesitar un buffer de 128 B, que en esta pagina no
+;  cabe: el primer registro se lee DIRECTAMENTE en $0100. Si resulta ser
+;  una cabecera, se copian los dos campos que interesan y se vuelve a
+;  empezar desde el registro 2 -- que es donde empieza el cuerpo --
+;  cargando otra vez en $0100. Si no lo es, ya esta en su sitio y se
+;  sigue como siempre.
+; =====================================================================
+            ld   de, 0100h
+            ld   (ldr$dma), de
+            ld   c, 26               ; F_DMAOFF
+            call ldr$bdos
+            ld   de, (ldr$fcb)
+            ld   c, 20               ; F_READ: primer registro
+            call ldr$bdos
+            or   a
+            jp   nz, ldr$done        ; fichero vacio
+
+            ld   a, (0100h)
+            cp   0C9h
+            jr   nz, ldr$plain       ; .COM normal: el registro ya esta puesto
+
+            ld   hl, (0101h)
+            ld   (ldr$blen), hl      ; longitud del cuerpo
+            ld   a, (010Fh)
+            ld   (ldr$nrsx), a       ; cuantos modulos
+            ld   hl, (0112h)         ; descriptor +2: longitud del modulo
+            ld   (ldr$rsxl), hl
+
+            ld   hl, (ldr$cr)
+            ld   (hl), 2             ; CR = 2: saltar los 256 B de cabecera
+            ld   hl, 0100h
+            ld   (ldr$dma), hl       ; y recargar desde el principio
+            jr   ldr$loop
+
+; .COM normal: el primer registro ya esta en $0100, seguir por el segundo.
+ldr$plain:  xor  a
+            ld   (ldr$nrsx), a
+            ld   hl, 0180h
+            ld   (ldr$dma), hl
 
 ldr$loop:   ld   de, (ldr$dma)
             ld   c, 26               ; F_DMAOFF
@@ -102,7 +163,7 @@ ldr$loop:   ld   de, (ldr$dma)
             ld   c, 20               ; F_READ (secuencial)
             call ldr$bdos
             or   a
-            jr   nz, ldr$done        ; <>0: fin de fichero (o error)
+            jp   nz, ldr$done        ; <>0: fin de fichero (o error)
             ld   hl, (ldr$dma)
             ld   de, 128
             add  hl, de
@@ -111,7 +172,10 @@ ldr$loop:   ld   de, (ldr$dma)
 
 ; Cargado. La CCP dejo $0100 en lo alto de la pila antes del "jmp bdos",
 ; asi que el "ret" de aqui abajo entra en el programa.
-ldr$done:   call ldr$dma80
+ldr$done:   ld   a, (ldr$nrsx)
+            or   a
+            call nz, ldr$rsx         ; hay modulo residente: colocarlo
+            call ldr$dma80
             ld   hl, 0100h
             ld   a, l
             ret
@@ -119,6 +183,164 @@ ldr$done:   call ldr$dma80
 ; No se pudo abrir. Hay que descartar el $0100 que apilo la CCP: debajo
 ; dejo un $0000, asi que el "ret" se va al arranque en caliente y vuelve
 ; el prompt en vez de saltar a un TPA vacio.
+; =====================================================================
+;  ldr$rsx - coloca el modulo residente y lo mete en la cadena BDOS.
+;
+;  Al llegar aqui el fichero entero esta cargado desde $0100: primero el
+;  cuerpo del programa (ldr$blen bytes) y justo detras el modulo, con su
+;  mapa de reubicacion pegado al final.
+;
+;  EL PREFIJO DEL MODULO son 27 bytes ($1B), y es lo que lo hace
+;  encadenable:
+;
+;    +$06  JMP start    <- la entrada: $0006 acabara apuntando AQUI
+;    +$09  JMP next     <- se parchea con la entrada BDOS anterior
+;    +$10  nombre (8 bytes)
+;
+;  Comprobado en los cinco del disco: todos llevan "C3 xx 01" en +$06 y
+;  el destino de ese salto cae justo detras del prefijo.
+;
+;  LA REUBICACION es formato PRL: detras del modulo hay un mapa de bits,
+;  uno por byte de codigo, con el mas significativo primero. Cada bit a 1
+;  marca un byte que es la parte ALTA de una direccion y hay que sumarle
+;  el desplazamiento de pagina. Los modulos se ensamblan para base $0100,
+;  asi que el desplazamiento es "pagina destino menos 1".
+;
+;  Comprobado que el mapa esta ahi: para los tres que mire, longitud mas
+;  ceil(longitud/8) cabe justo en lo que queda del fichero.
+;
+;  LIMITACION: se procesa UN solo modulo. La cabecera admite varios, pero
+;  los cinco del disco llevan uno y guardar todos los descriptores
+;  costaria mas memoria de la que hay en esta pagina.
+; =====================================================================
+ldr$rsx:    ld   hl, (ldr$blen)      ; origen = $0100 + longitud del cuerpo
+            ld   de, 0100h
+            add  hl, de
+            ld   (ldr$src), hl
+
+; ---------------------------------------------------------------------
+;  ¿Esta ya residente? Hay que mirarlo ANTES de colocar nada.
+;
+;  Sin esto, cada ejecucion del programa carga otra copia del modulo y
+;  baja bdosbase otro tanto. Y la segunda vez es fatal, no solo un
+;  desperdicio: la CCP pone la pila del transitorio justo debajo de
+;  bdosbase, o sea encima de donde vamos a dejar la copia nueva. La pila
+;  baja, se come el modulo recien puesto, y el siguiente "ret" salta a
+;  cualquier sitio. Confirmado en hardware: SP=$D61A dentro del modulo
+;  que acababa de colocarse en $D200-$D61D.
+;
+;  Se recorre la cadena desde $0006 comparando los 8 bytes de nombre del
+;  prefijo (+$10). El final de la cadena es siempre LDR_BASE, que es
+;  nuestro propio stub y no lleva prefijo.
+; ---------------------------------------------------------------------
+            ld   hl, (0006h)
+rx$next:    ld   a, h                ; ¿hemos llegado a nuestro stub?
+            cp   LDR_BASE/256
+            jr   nz, rx$cmp
+            ld   a, l
+            cp   LDR_BASE&255
+            jr   z, rx$load          ; fin de cadena: no estaba
+
+rx$cmp:     ld   de, -6              ; base del modulo
+            add  hl, de
+            push hl
+            ld   de, 0010h
+            add  hl, de              ; base+$10 = nombre
+            ld   de, (ldr$src)
+            ex   de, hl
+            ld   bc, 0010h
+            add  hl, bc
+            ex   de, hl              ; DE = nombre del que traemos
+            ld   b, 8
+rx$c1:      ld   a, (de)
+            cp   (hl)
+            jr   nz, rx$diff
+            inc  hl
+            inc  de
+            djnz rx$c1
+            pop  hl
+            ret                      ; mismo nombre: ya esta, no hacer nada
+
+rx$diff:    pop  hl                  ; seguir por el "JMP next" del prefijo
+            ld   de, 000Ah
+            add  hl, de
+            ld   a, (hl)
+            inc  hl
+            ld   h, (hl)
+            ld   l, a
+            jr   rx$next
+
+rx$load:    ld   hl, (0006h)         ; destino: debajo de la entrada BDOS
+            ld   de, (ldr$rsxl)      ; actual, redondeado a pagina abajo
+            or   a
+            sbc  hl, de
+            ld   l, 0
+            ld   (ldr$dst), hl
+
+            ld   a, h                ; desplazamiento de reubicacion:
+            dec  a                   ; pagina destino menos la base $01
+            ld   (ldr$delta), a
+
+            ld   de, (ldr$dst)       ; mover el modulo arriba
+            ld   hl, (ldr$src)
+            ld   bc, (ldr$rsxl)
+            ldir
+
+; --- reubicar: HL = mapa, DE = byte a ajustar, BC = cuantos quedan ---
+            ld   hl, (ldr$src)
+            ld   bc, (ldr$rsxl)
+            add  hl, bc              ; el mapa va pegado al modulo
+            ld   de, (ldr$dst)
+            xor  a
+            ld   (ldr$nbit), a       ; sin bits pendientes
+
+rl$loop:    ld   a, b
+            or   c
+            jr   z, rl$done
+            ld   a, (ldr$nbit)
+            or   a
+            jr   nz, rl$have
+            ld   a, (hl)             ; siguiente byte del mapa
+            inc  hl
+            ld   (ldr$bits), a
+            ld   a, 8
+rl$have:    dec  a
+            ld   (ldr$nbit), a
+            ld   a, (ldr$bits)
+            rlca                     ; el mas significativo primero
+            ld   (ldr$bits), a
+            jr   nc, rl$skip
+            push hl
+            ld   hl, ldr$delta
+            ld   a, (de)
+            add  a, (hl)
+            ld   (de), a
+            pop  hl
+rl$skip:    inc  de
+            dec  bc
+            jr   rl$loop
+
+; --- encadenar ---
+rl$done:    ld   hl, (ldr$dst)       ; su "JMP next" pasa a apuntar a la
+            ld   de, 0Ah             ; entrada BDOS que habia hasta ahora
+            add  hl, de
+            ld   de, (0006h)
+            ld   (hl), e
+            inc  hl
+            ld   (hl), d
+
+            ld   hl, (ldr$dst)       ; y $0006 pasa a apuntar al modulo
+            ld   de, 6
+            add  hl, de
+            ld   (0006h), hl
+            ld   (@MXTPA), hl        ; para que sobreviva al arranque en
+                                      ; caliente: set$jumps rehace $0006
+                                      ; desde aqui en cada entrada a la CCP
+            ld   hl, (ldr$dst)
+            ld   (scb$base-4), hl    ; bdosbase: ahi coloca la CCP la pila
+            ret                       ; y el FCB del siguiente transitorio
+
+
 ldr$err:    call ldr$dma80
             pop  hl
             ld   hl, 0
@@ -136,6 +358,15 @@ ldr$bdos:   jp   call5_entry
 
 ldr$fcb:    defw 0
 ldr$dma:    defw 0
+ldr$cr:     defw 0               ; puntero al campo CR del FCB
+ldr$blen:   defw 0               ; longitud del cuerpo (cabecera +$01)
+ldr$nrsx:   defb 0               ; numero de modulos RSX (cabecera +$0F)
+ldr$rsxl:   defw 0               ; longitud del modulo (descriptor +$02)
+ldr$src:    defw 0               ; donde quedo el modulo tras la carga
+ldr$dst:    defw 0               ; donde va a vivir
+ldr$delta:  defb 0               ; desplazamiento de pagina para reubicar
+ldr$bits:   defb 0               ; byte en curso del mapa de reubicacion
+ldr$nbit:   defb 0               ; bits que le quedan
 
 
 ; =====================================================================

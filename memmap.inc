@@ -35,14 +35,19 @@ RAMDISK_BASE equ 15   ; primera pagina fisica del pool del disco RAM
 ;      (baja desde LDR_BASE) y la direccion del FCB ($DEC0).
 ;  Ver la nota larga en loader.z80 y memory_map.md.
 ; ---------------------------------------------------------------------
-LDR_BASE     equ 0DD00h   ; direccion de ejecucion, en el banco de usuario
-LDR_LEN      equ 256      ; multiplo de 128: ldccp_real copia por bloques
+; Crecio de 256 a 768 bytes al anadir el soporte de .COM con prefijo RSX:
+; leer la cabecera, cargar el cuerpo, y (etapa 2) reubicar y encadenar los
+; modulos. bios$tbl se queda donde estaba, en $DD80, asi que al stub le
+; quedan los 640 bytes de $DB00-$DD7F.
+LDR_BASE     equ 0DB00h   ; direccion de ejecucion, en el banco de usuario
+LDR_LEN      equ 768      ; multiplo de 128: ldccp_real copia por bloques
 
 ; Tabla de saltos del BIOS que ven los programas, en la segunda mitad de
-; esa misma pagina. 33 entradas de 3 bytes ($DD80-$DDE2). $0001 apunta a
+; esa misma pagina. 33 entradas de 3 bytes ($DD80-$DDE2). Se expresa
+; como desplazamiento para que no se mueva si LDR_BASE cambia. $0001 apunta a
 ; su entrada WBOOT (BIOSTBL+3), que es de donde un programa de CP/M 2.2
 ; deduce la base del BIOS. Ver la nota larga en loader.z80.
-BIOSTBL      equ LDR_BASE+80h
+BIOSTBL      equ LDR_BASE+280h
 
 ; ---------------------------------------------------------------------
 ;  disk_handle - handles SD de las unidades A-D (4 bytes). EN BANCO
@@ -72,7 +77,7 @@ DISKHANDLE   equ 0F8FCh
 ;  del TPA que leen los programas, asi que todo lo que haya que proteger
 ;  tiene que estar por encima de LDR_BASE.
 ;
-;    $DD00-$DDFF   cargador + bios$tbl   (LDR_BASE)
+;    $DB00-$DDFF   cargador + bios$tbl   (LDR_BASE, 768 B)
 ;    $DE00-$DFFF   zona duplicada        (SWITCHER_BASE)
 ; ---------------------------------------------------------------------
 SWITCHER_BASE equ 0DE00h

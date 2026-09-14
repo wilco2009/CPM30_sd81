@@ -428,10 +428,10 @@ ica_col:    ld   (hl), a
 ; la ROM del ZX81 en su orden nativo. Con font_image.z80 se escribe el
 ; texto tal cual.
 ;
-; El TPA va de $0100 a LDR_BASE ($DD00, donde empieza el cargador de
-; transitorios): $DC00 = 56320 bytes = 55K justos.
+; El TPA va de $0100 a LDR_BASE ($DB00, donde empieza el cargador de
+; transitorios): $DA00 = 55808 bytes = 54.5K justos.
 banner_msg: defb 'CP/M Plus v3.0 - SD81Booster for Sinclair ZX81',0Dh,0Ah
-            defb 'Banked memory, 55K TPA',0Dh,0Ah
+            defb 'Banked memory, 54.5K TPA',0Dh,0Ah
             defb '(c) 2026 Wilco2009',0Dh,0Ah,000h
 
 ; =======================================================================
