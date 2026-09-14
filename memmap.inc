@@ -38,8 +38,8 @@ RAMDISK_BASE equ 15   ; primera pagina fisica del pool del disco RAM
 ; Crecio de 256 a 768 bytes al anadir el soporte de .COM con prefijo RSX:
 ; leer la cabecera, cargar el cuerpo, y (etapa 2) reubicar y encadenar los
 ; modulos. bios$tbl se queda donde estaba, en $DD80, asi que al stub le
-; quedan los 640 bytes de $DB00-$DD7F.
-LDR_BASE     equ 0DB00h   ; direccion de ejecucion, en el banco de usuario
+; quedan los 640 bytes de $DA00-$DC7F.
+LDR_BASE     equ 0DA00h   ; direccion de ejecucion, en el banco de usuario
 LDR_LEN      equ 768      ; multiplo de 128: ldccp_real copia por bloques
 
 ; Tabla de saltos del BIOS que ven los programas, en la segunda mitad de
@@ -77,11 +77,11 @@ DISKHANDLE   equ 0F8FCh
 ;  del TPA que leen los programas, asi que todo lo que haya que proteger
 ;  tiene que estar por encima de LDR_BASE.
 ;
-;    $DB00-$DDFF   cargador + bios$tbl   (LDR_BASE, 768 B)
-;    $DE00-$DFFF   zona duplicada        (SWITCHER_BASE)
+;    $DA00-$DCFF   cargador + bios$tbl   (LDR_BASE, 768 B)
+;    $DD00-$DFFF   zona duplicada        (SWITCHER_BASE, 768 B)
 ; ---------------------------------------------------------------------
-SWITCHER_BASE equ 0DE00h
-SWITCHER_LEN  equ 0200h
+SWITCHER_BASE equ 0DD00h
+SWITCHER_LEN  equ 0300h
 SWITCHER_BLK  equ 6           ; bloque que la contiene ($C000-$DFFF)
 
 ; ---------------------------------------------------------------------
@@ -201,3 +201,20 @@ CTBLORG      equ 0F797h
 ;  siguiente.
 ; ---------------------------------------------------------------------
 RTCORG       equ 0CE00h
+
+; ---------------------------------------------------------------------
+;  Estado de biosd (bank.z80), el envoltorio de las entradas de disco.
+;  Cuatro bytes, en el hueco que quedaba detras de @ctbl.
+;
+;  Son SUYOS y no compartidos con biosw a proposito: la BDOS puede estar
+;  en mitad de una operacion de disco y tener que imprimir un error, y
+;  entonces conout entra por biosw. Con variables compartidas se
+;  pisarian.
+;
+;  No hace falta guardar HL: ?bank preserva todos los registros desde que
+;  se arreglo. biosw todavia tiene su bw$hl porque se escribio antes de
+;  aquello, y se queda como esta para no tocar lo que ya funciona.
+; ---------------------------------------------------------------------
+BD_SP        equ 0F7A0h   ; SP del llamante
+BD_BNK       equ 0F7A2h   ; su banco, para restaurarlo
+BD_A         equ 0F7A3h   ; valor devuelto en A

@@ -319,6 +319,65 @@ bank_loop:  ld   a,d
 ;  Tabla de saltos del BIOS (duplicada -- ver la nota mas arriba, junto
 ;  a los "extrn"). ?boot es la unica sin cambio de contexto.
 ; ---------------------------------------------------------------------
+
+; =====================================================================
+;  biosd - envoltorio de las entradas de DISCO de la tabla.
+;
+;  EL PROBLEMA. Esas entradas eran saltos de cola:
+;
+;      ?sldsk:  xor a / call bnksel / jmp seldsk
+;
+;  Selecciona sistema y salta. Va bien cuando quien llama es la BDOS,
+;  porque su pila (lstack) vive en el banco 7 y sigue ahi despues del
+;  cambio. Pero un RSX -- o cualquier programa que llame al BIOS
+;  directamente por la tabla, que es lo que abrimos al arreglar
+;  bios$tbl -- llama con su pila en el TPA, o sea en memoria BANCADA.
+;  Al seleccionar sistema, SP sigue apuntando a la misma direccion
+;  logica, donde ahora hay otra cosa.
+;
+;  Confirmado en hardware con SET.COM: su modulo DIRLBL apilaba la
+;  direccion de retorno $D755 en $DA18 del banco de usuario, ?sldsk
+;  cambiaba a sistema, y el "ret" de seldsk recogia el cero que hay en
+;  $DA18 del banco de sistema y saltaba a la pagina cero.
+;
+;  Nadie machacaba nada: se leia de otro banco. Es la misma regla de
+;  siempre -- lo que se lee a los dos lados de un cambio de banco tiene
+;  que existir a los dos lados -- aplicada esta vez a la PILA.
+;
+;  LA CURA es la de biosw: cambiar a una pila comun ANTES de tocar los
+;  bancos, y restaurar el banco del llamante al volver.
+;
+;  LA PILA es boot$stack: 56 bytes que solo se usan durante el arranque
+;  y que despues estan muertos. No hay dos usuarios a la vez porque el
+;  bucle de inicializacion de unidades de "boot:" llama a los drivers
+;  DIRECTAMENTE por ipchl, nunca por esta tabla.
+;
+;  EL ESTADO es propio y no compartido con biosw, a proposito: la BDOS
+;  puede estar en mitad de una operacion de disco y tener que imprimir
+;  un error, y entonces conout entra por biosw. Con variables comunes se
+;  pisarian.
+;
+;  HL no se guarda: ?bank preserva todos los registros desde que se
+;  arreglo, y eso ademas es lo que permite que ?sldsk y ?sctrn sigan
+;  devolviendo su resultado en HL.
+; =====================================================================
+biosd:      ld   (BD_SP), sp     ; pila comun ANTES de tocar bancos
+            ld   sp, boot$stack
+            ld   a, (@cbnk)
+            ld   (BD_BNK), a
+            xor  a
+            call bnksel          ; sistema; ?bank preserva HL
+            ld   de, bd$back
+            push de
+            jp   (hl)
+
+bd$back:    ld   (BD_A), a
+            ld   a, (BD_BNK)
+            call bnksel          ; devolver al llamante su banco
+            ld   a, (BD_A)
+            ld   sp, (BD_SP)
+            ret
+
 ; =====================================================================
 ;  biosw - envoltorio de las entradas de E/S de caracter.
 ;
@@ -388,33 +447,30 @@ bw$back:    ld   (bw$a), a       ; valor devuelto
 ?auxi:      ld   hl, auxin
             jmp  biosw
 
-?home:      xor  a
-            call bnksel
-            jmp  home
-?sldsk:     xor  a
-            call bnksel
-            jmp  seldsk
-?sttrk:     xor  a
-            call bnksel
-            jmp  settrk
-?stsec:     xor  a
-            call bnksel
-            jmp  setsec
-?stdma:     xor  a
-            call bnksel
-            jmp  setdma
-?read:      xor  a
-            call bnksel
-            jmp  read
-?write:     xor  a
-            call bnksel
-            jmp  write
+; Las entradas de disco pasan por biosd (mas abajo) y no por el salto de
+; cola de siempre: un programa de usuario -- o un RSX -- las llama con su
+; pila en el TPA, o sea en memoria BANCADA, y el salto de cola cambia de
+; banco dejando SP apuntando a la misma direccion logica. Ver la nota
+; larga junto a biosd.
+?home:      ld   hl, home
+            jmp  biosd
+?sldsk:     ld   hl, seldsk
+            jmp  biosd
+?sttrk:     ld   hl, settrk
+            jmp  biosd
+?stsec:     ld   hl, setsec
+            jmp  biosd
+?stdma:     ld   hl, setdma
+            jmp  biosd
+?read:      ld   hl, read
+            jmp  biosd
+?write:     ld   hl, write
+            jmp  biosd
 
 ?lists:     ld   hl, listst
             jmp  biosw
-?sctrn:     xor  a
-            call bnksel
-            jmp  sectrn
+?sctrn:     ld   hl, sectrn
+            jmp  biosd
 
 ?conos:     ld   hl, conost
             jmp  biosw

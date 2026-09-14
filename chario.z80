@@ -55,6 +55,10 @@ chario$save equ $            ; ver el "org" de cierre mas abajo
             defb baud$none
             defb 0                  ; terminador de tabla
 
+; Los 4 bytes que quedaban aqui son ahora el estado de biosd (bank.z80).
+; Ver la nota en memmap.inc.
+            ds   BD_SP-$
+            defs 4
             ds   0F7A4h-$        ; guarda: detras, las variables de ?bank
 
             org  chario$save
