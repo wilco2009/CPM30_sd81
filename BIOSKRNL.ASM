@@ -172,6 +172,21 @@ d$init$next:
 ; desde "start" (system.z80, antes de ?boot) y sfast_mode_en desde el
 ; POKE 2045,174 de ?init (init.z80), que se ejecuta ANTES de boot$1.
 
+; CPM3_SD81: la posicion que llevabamos se guarda AQUI para poder
+; retomarla al cerrar el bloque (ver "org bioskrnl$boot$save" mas abajo).
+;
+; OJO con el nombre: este fichero YA usa "bioskrnl$cseg$save" para el
+; parentesis de $B800 (mas abajo, junto a ipchl). Son dos bloques
+; distintos y necesitan cada uno su etiqueta.
+; Antes ese cierre era un "org 06058h" literal -- la direccion calculada
+; a mano de lo que venia detras de "jmp boot$1". Dejo de ser correcta en
+; cuanto "start:" (system.z80) crecio 5 bytes al mover ahi mc45_ext67:
+; el bucle de unidades de "boot:" se desplazo hasta $605C y se SOLAPO con
+; seldsk, que seguia clavado en $6058. Dos "org" que se pisan no dan
+; ningun error: el .lst mostraba "jnz d$init$loop" y el .cim tenia los
+; bytes de seldsk encima. El sintoma fue un salto a $3279 y un HALT.
+bioskrnl$boot$save equ $
+
 	org 0F598h
 
 boot$1:
@@ -200,8 +215,17 @@ set$jumps:
 	mvi a,JMP
 	sta 0
 	sta 5	; set up jumps in page zero
-	lxi h,?wboot
-	shld 1	; BIOS warm start entry
+; CPM3_SD81: aqui iba "lxi h,?wboot". Ahora apunta a la tabla de saltos
+; intermedia (BIOSTBL, loader.z80), porque $0001 no solo es el vector de
+; arranque en caliente: es TAMBIEN de donde un programa de CP/M 2.2 saca
+; la base del BIOS, restando 3 e indexando de tres en tres. Nuestra tabla
+; real lleva el cambio de banco dentro de cada entrada y por tanto no
+; tiene 3 bytes por entrada -- ver la nota larga en loader.z80.
+;
+; Como las dos cosas conviven en la misma palabra, la indireccion vale
+; para ambas: "jmp 0" salta a BIOSTBL+3, que es "jp ?wboot".
+	lxi h,BIOSTBL+3
+	shld 1	; BIOS warm start entry (y base del BIOS para el usuario)
 	lhld @MXTPA
 	shld 6	; BDOS system call entry
 
@@ -601,14 +625,15 @@ xofflist	db	-1,-1,-1,-1,-1,-1,-1,-1		; ctl-s clears to zero
 ;
 ; CPM3_SD81: de vuelta a memoria banked normal (sistema, banco 3) --
 ; solo el bloque de arriba (boot$1..bnksel+xofflist, mas boot$stack)
-; necesitaba banco 7. Volvemos a $6058, la direccion que le habria
-; tocado a este bloque si no hubieramos insertado el "org" de arriba
-; (justo detras de "jmp boot$1") -- asi todo lo de aqui abajo
-; (seldsk..flush, @adrv..@dbnk) y los ficheros que vienen despues
-; (bank.z80, etc.) mantienen las mismas direcciones que antes de este
-; cambio.
+; necesitaba banco 7. Se retoma la posicion exacta que llevabamos justo
+; detras de "jmp boot$1", asi que todo lo de aqui abajo (seldsk..flush,
+; @adrv..@dbnk) y los ficheros que vienen despues (bank.z80, etc.) siguen
+; donde les toca, crezca lo que crezca lo de delante.
+;
+; Esto era un "org 06058h" literal y se solapo con "boot:" en cuanto
+; "start:" crecio 5 bytes -- ver la nota junto al "org 0F598h" de arriba.
 
-	org 06058h
+	org bioskrnl$boot$save
 
 
 

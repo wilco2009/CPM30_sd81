@@ -24,27 +24,20 @@
 ;  desde $6000, asi que el cargador deja la fuente ya puesta y no hace
 ;  falta copiarla en ?init.
 ;
-;  OJO -- la tabla EMPIEZA en el codigo 23 ($F8B8), no en el 0. Los
-;  glifos de los codigos 0-22 ($F800-$F8B7) no son imprimibles nunca
+;  OJO -- la tabla EMPIEZA en el codigo 32 ($F900), no en el 0. Los
+;  glifos de los codigos 0-31 ($F800-$F8FF) no son imprimibles nunca
 ;  (?co los filtra con "cp 20h / ret c", y la pantalla se borra con el
 ;  32), asi que ese hueco se reutiliza: los codigos 0-15 para @bnkbf, el
-;  buffer de 128 bytes del BIOS bancado (SCB.ASM), y los 16-20 para el
-;  estado de biosw y bank$exit (bank.z80). La
+;  buffer de 128 bytes del BIOS bancado (SCB.ASM), los 16-20 para el
+;  estado de biosw, los 21-22 para bank$exit y el 23 para las variables
+;  de ?xmove/?move (bank.z80) y los 24-31 para lstack, la pila de la
+;  BDOS (init.z80). La
 ;  base de la tabla que ve el hardware sigue siendo $F800: la fija el
 ;  registro I y el modo de 256 caracteres exige alineacion a 2 KB.
 ; =====================================================================
 
-            org  0F8B8h
+            org  0F900h
 
-            defb 018h,07Eh,018h,07Eh,018h,000h,07Eh,000h   ; $17 ↨ [atlas]
-            defb 018h,03Ch,07Eh,018h,018h,018h,018h,000h   ; $18 ↑ [atlas]
-            defb 018h,018h,018h,018h,07Eh,03Ch,018h,000h   ; $19 ↓ [atlas]
-            defb 008h,00Ch,0FEh,0FEh,00Ch,008h,000h,000h   ; $1A → [atlas]
-            defb 020h,060h,0FEh,0FEh,060h,020h,000h,000h   ; $1B ← [atlas]
-            defb 000h,000h,0C0h,0C0h,0C0h,0FCh,000h,000h   ; $1C ∟ [atlas]
-            defb 000h,028h,06Ch,0FEh,06Ch,028h,000h,000h   ; $1D ↔ [atlas]
-            defb 000h,010h,038h,07Ch,0FEh,0FEh,000h,000h   ; $1E ▲ [atlas]
-            defb 000h,0FEh,0FEh,07Ch,038h,010h,000h,000h   ; $1F ▼ [atlas]
             defb 000h,000h,000h,000h,000h,000h,000h,000h   ; $20 espacio [atlas]
             defb 000h,010h,010h,010h,010h,000h,010h,000h   ; $21 ! [FONT.BIN]
             defb 000h,024h,024h,000h,000h,000h,000h,000h   ; $22 " [FONT.BIN]

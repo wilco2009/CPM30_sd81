@@ -17,3 +17,15 @@ traza.txt
 # caracteres ASCII de 7 px de ancho que genfont.py mezcla con el atlas
 # CP437 para producir font_image.z80). Sin el no se puede regenerar.
 !FONT.BIN
+
+# Imagenes de disco: se generan con mkblank.py, no se versionan (2 MB
+# de $E5 no aportan nada a un repositorio).
+*.IMG
+*.img
+
+# MOUNT3.COM es salida de build_mount3.bat, como cualquier otro binario
+*.COM
+*.com
+
+# Copias de seguridad sueltas
+*.bak

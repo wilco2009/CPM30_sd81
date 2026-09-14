@@ -60,7 +60,10 @@ ctl	equ	5eh	; up arrow
 ; reescribir ldccp_real (crecio con el bucle de copia de la CCP) --
 ; confirmado en hardware con un trazado paso a paso: en vez de
 ; ejecutar in_mcu_send, saltaba a "bdose"/"bdose2" (BDOS.ASM). El
-; final real del XIOS es "noccp_msg" en $8848 (+6 = $884E) -- $8900 dej
+; final real del XIOS era entonces "noccp_msg" en $8848 (+6 = $884E) --
+; ese mensaje de diagnostico ya no existe, pero el razonamiento sigue: la
+; guarda "ds 08A00h-$" de system.z80 es la que lo comprueba de verdad en
+; cada ensamblado. $8900 dej
 ; margen de sobra. Cabe en los bloques 4-5 (hasta ~$BD00), sin
 ; necesitar mc45_ext67.
 		org	08A00h

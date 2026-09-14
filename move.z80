@@ -1,10 +1,12 @@
 ; =====================================================================
-;  move.z80 - ?xmove/?move (copia entre contextos) + @bnkbf. Zona normal
-;  del banco 3 (sistema), NO duplicada -- solo los invoca BDOS, que ya
-;  esta en "sistema" al llamar, y ?move siempre restaura el contexto
-;  original antes de su propio "ret" (ver mv$done), asi que nunca hay
-;  un "ret" ejecutandose con el banco 3 cambiado bajo sus pies como le
-;  pasa a ?bank (ver bank.z80).
+;  move.z80 - ?xmove y ?time. Zona normal del banco 3 (sistema).
+;
+;  ?move ya NO esta aqui: su cuerpo y sus variables se mudaron a
+;  bank.z80. El razonamiento que los mantenia aqui ("?move restaura el
+;  contexto antes de su ret, asi que no hay problema") era falso: el
+;  problema no es el "ret" final, sino que ?move cambia de banco EN
+;  MEDIO, y mientras tanto sigue ejecutando -- y leyendo sus variables --
+;  desde $8xxx, que en el banco de usuario es TPA vacia.
 ;
 ;  Contrato derivado de BDOS30.ASM (lineas 5551-5568, las dos llamadas
 ;  a deblock12->xmovef antes de una lectura/escritura de disco):
@@ -22,15 +24,12 @@
 ; MCU tiene RTC.cpp, pero aun no esta conectado aqui). Por ahora no-op.
 ?time:      ret
 
-xmv$dbnk:   ds   1
-xmv$sbnk:   ds   1
-; xmv$pend vive en bank.z80 (banco 7), no aqui: lo escribe ?xmove bajo
-; sistema y lo consulta ?mov bajo el banco del llamante, asi que tiene
-; que ser memoria comun.
-mv$de:      ds   2              ; puntero origen, avanza entre trozos
-mv$hl:      ds   2              ; puntero destino, avanza entre trozos
-mv$cnt:     ds   2              ; bytes restantes
-mv$len:     ds   1              ; longitud del trozo actual (1-128)
+; Las variables de ?xmove/?move (xmv$dbnk/xmv$sbnk/mv$de/mv$hl/mv$cnt/
+; mv$len) y el cuerpo de ?move viven ahora en bank.z80 -- las primeras en
+; banco 7 y el segundo en la zona duplicada. Ver la nota junto a ?move
+; alli: este fichero se ensambla en memoria bancada y por tanto no puede
+; sobrevivir a un cambio de banco. ?xmove si puede quedarse aqui: no
+; conmuta nada, solo memoriza.
 
 ?xmove:     ld   a,b
             ld   (xmv$dbnk),a
@@ -38,89 +37,4 @@ mv$len:     ds   1              ; longitud del trozo actual (1-128)
             ld   (xmv$sbnk),a
             ld   a,0FFh
             ld   (xmv$pend),a    ; marca: el proximo ?move es entre bancos
-            ret
-
-; ---------------------------------------------------------------------
-; ?move - HL = destino, DE = origen, BC = contador. Devuelve HL y DE
-; avanzados y BC = 0.
-;
-; CPM3_SD81: la especificacion de DRI es que MOVE copia DENTRO DEL BANCO
-; ACTUAL, y solo usa bancos distintos si XMOVE se llamo inmediatamente
-; antes -- y XMOVE afecta SOLO al siguiente MOVE. Esta version hacia
-; siempre la copia entre bancos usando xmv$sbnk/xmv$dbnk, que fuera de
-; esa secuencia contienen valores rancios.
-;
-; Sintoma real que producia: "cpyfcbin" (RESBDOS.ASM) copia el FCB del
-; usuario a commonfcb con "lxi h,commonfcb / lxi b,36 / call movef", SIN
-; xmovef delante -- asi que leia el FCB del banco equivocado y la BDOS
-; recibia basura. Confirmado en hardware: la CCP pasaba su "subfcb" con
-; el byte de unidad = 1 (unidad A) y la BDOS acababa seleccionando la
-; unidad 25, que es la "Z" del mensaje de error.
-; ---------------------------------------------------------------------
-; A ?move solo se llega con un XMOVE pendiente: el caso normal (copia
-; dentro del banco activo) lo resuelve ya la entrada ?mov de bank.z80,
-; que vive en el bloque duplicado y por tanto puede hacer el LDIR sin
-; tocar el paginado. Aqui siempre hay que cambiar de banco, y por eso
-; este cuerpo vive en memoria bancada sin problema.
-?move:      xor  a
-            ld   (xmv$pend),a    ; XMOVE solo vale para este ?move
-
-            ld   (mv$de),de
-            ld   (mv$hl),hl
-            ld   (mv$cnt),bc
-
-mv$loop:    ld   de,(mv$cnt)
-            ld   a,d
-            or   e
-            jr   z, mv$done      ; restante=0 -> terminado
-
-            ; trozo = min(restante,128) -> A
-            ld   a,d
-            or   a
-            jr   nz, mv$t128     ; D<>0 -> restante>=256 -> trozo=128
-            ld   a,e
-            cp   129
-            jr   nc, mv$t128     ; E>=129 -> trozo=128
-            ld   a,e             ; restante<=128 -> trozo=restante
-            jr   mv$gotlen
-mv$t128:    ld   a,128
-mv$gotlen:  ld   (mv$len),a
-
-            ; --- fase 1: contexto origen -> @bnkbf ---
-            ld   de,(mv$de)
-            ld   hl,@bnkbf
-            ld   a,(xmv$sbnk)
-            call ?bank
-            ld   a,(mv$len)
-            ld   c,a
-            ld   b,0
-            ldir                 ; (DE)->(@bnkbf); avanza DE y HL
-            ld   (mv$de),de
-
-            ; --- fase 2: @bnkbf -> contexto destino ---
-            ld   hl,@bnkbf       ; HL=origen del LDIR (@bnkbf)
-            ld   de,(mv$hl)      ; DE=destino del LDIR (destino real)
-            ld   a,(xmv$dbnk)
-            call ?bank
-            ld   a,(mv$len)
-            ld   c,a
-            ld   b,0
-            ldir                 ; (HL)=@bnkbf -> (DE)=destino real; avanza DE
-            ld   (mv$hl),de      ; guarda el puntero destino avanzado
-
-            ; --- restante -= trozo ---
-            ld   hl,(mv$cnt)
-            ld   a,(mv$len)
-            ld   e,a
-            ld   d,0
-            or   a
-            sbc  hl,de
-            ld   (mv$cnt),hl
-            jr   mv$loop
-
-mv$done:    ld   a,(@cbnk)       ; deja el hardware como estaba al entrar
-            call ?bank
-            ld   de,(mv$de)
-            ld   hl,(mv$hl)
-            ld   bc,0
             ret

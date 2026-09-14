@@ -39,6 +39,11 @@ DFILE_val      equ 0E899h
 ATTR_OVR       equ 2059
 ATTR_OVR_EN    equ 2061
 ATTR_val       equ 0E100h
+ATTR_SCREEN    equ 01Eh        ; papel azul ($1), tinta amarilla brillante
+                                ; ($E). Ver la nota en in_clear_attrs.
+CHROMA_PORT    equ 07FEFh      ; registro de modo Chroma (SD81.v:427)
+CHROMA_val     equ 031h        ; color_enable + color_mode + borde azul
+                                ; ($1), a juego con el papel de la pantalla
 FONT_I         equ 0F8h
 FONT_ADDR      equ 0F800h        ; la tabla la genera font_image.z80
 
@@ -82,7 +87,14 @@ CMD_fullpaging equ 01Dh        ; 29
             ; ldccp_real, aqui en el punto mas fundamental de todos.
             ; call5_entry (banco 7, ver mas abajo) hace el cambio a
             ; sistema primero.
-            ld   hl, call5_entry
+            ; Apunta al cargador (loader.z80), no a call5_entry: el
+            ; cargador es el primer eslabon de la cadena BDOS -- atiende
+            ; la funcion 59 y pasa todo lo demas a call5_entry. Es como
+            ; se intercala un RSX en CP/M 3, y de paso @MXTPA vuelve a
+            ; ser de verdad el techo del TPA, que es lo que dice su
+            ; nombre: en un CP/M+ real ambas cosas coinciden, y aqui
+            ; habian divergido porque call5_entry vive en el banco 7.
+            ld   hl, LDR_BASE
             ld   (@MXTPA), hl
 
             ; --- vector de error del SCB ($E0FB) ---
@@ -150,6 +162,23 @@ CMD_fullpaging equ 01Dh        ; 29
             ld   hl, 0E000h
             ld   (scb$base+5Dh), hl      ; commonbase ($E0F9)
 
+            ; bdosbase ($E098 = scb$base-4): "real BDOS entry point".
+            ; Otro campo de GENSYS que estaba a cero, y la CCP lo usa
+            ; para DOS cosas distintas al lanzar un transitorio (xcom):
+            ;   lhld realdos-1 / dcr h / mvi l,0C0h   -> donde copia el FCB
+            ;   lhld realdos-1 / xra a / mov l,a / sphl -> la pila
+            ; Con el campo a cero salia H=$FF: el FCB se copiaba a $FFC0
+            ; (encima de la tabla de fuentes, en el banco comun) y el SP
+            ; quedaba en $0000, o sea que el primer push escribia en
+            ; $FFFE. Toda la pila del transitorio caia en memoria comun.
+            ;
+            ; Apunta a LDR_BASE, el cargador: el FCB queda en $DCC0 y la
+            ; pila baja desde $DD00, las dos dentro del TPA del banco de
+            ; usuario. Es la colocacion de DRI -- "page below LOADER (or
+            ; bottom RSX)" dice su propio comentario.
+            ld   hl, LDR_BASE
+            ld   (scb$base-4), hl        ; bdosbase ($E098)
+
             ; rubout$act ($E0CB) = $FF: que DEL borre de verdad.
             ; La BDOS decide asi (BDOS.ASM, editor de linea de la func 10):
             ;   cpi rubout / LDA RUBOUT$ACT / INR A / JZ DO$CTLH
@@ -190,6 +219,32 @@ CMD_fullpaging equ 01Dh        ; 29
             ld   a, 170
             ld   (ATTR_OVR_EN), a
 
+            ; --- registro Chroma ($7FEF): encender el color ---
+            ; Sin esto los atributos se calculan pero no se ven: valia
+            ; $0F (color_enable=0, color_mode=0) y la salida de video es
+            ; monocroma, "VRED = color_enable? cred&ncsync : video&ncsync"
+            ; (SD81.v:1600-1603).
+            ;   bit 5 color_enable -- saca RGB en vez de luminancia
+            ;   bit 4 color_mode   -- toma el atributo de attr_addr_m1, o
+            ;                         sea de ATTR_OVR, que es justo lo que
+            ;                         acabamos de programar arriba
+            ;                         (SD81.v:1151/1165/1535). Con 0 leeria
+            ;                         attr_addr_m0, otra direccion.
+            ;   bits 3-0 color del borde -- azul ($1), a juego con el
+            ;                         papel de la pantalla. Es el "paper"
+            ;                         del borde: en esa zona el hardware
+            ;                         monta el atributo como
+            ;                         "{border_ink, border_color}"
+            ;                         (SD81.v:1508), y ahi el nibble bajo
+            ;                         es el papel -- al reves que el byte
+            ;                         de atributo en memoria de video.
+            ; La decodificacion es de 16 bits ("Addr==16'h7FEF",
+            ; SD81.v:427), asi que hace falta "out (c),a" con BC entero,
+            ; no el "out (n),a" que usamos para el paginado.
+            ld   bc, CHROMA_PORT
+            ld   a, CHROMA_val
+            out  (c), a
+
             ld   a, 174
             ld   (2045), a
 
@@ -203,6 +258,10 @@ CMD_fullpaging equ 01Dh        ; 29
             ; los bloques 6/7 (donde vive nuestro codigo en banco 7,
             ; $E000-$FFFF: boot$1/set$jumps/bnksel/@cbnk, ver bank.z80/
             ; BIOSKRNL.ASM) necesitan activarlo aparte.
+            ; (redundante desde que la zona duplicada esta en el bloque
+            ; 6: start: en system.z80 tiene que activarlo antes incluso
+            ; de saltar a ?boot. Se deja por ser idempotente y porque es
+            ; aqui donde esta explicado el porque.)
             ld   a, 170
             ld   (2062), a       ; activar mc45_ext67 (bancos 6/7)
 
@@ -233,23 +292,24 @@ CMD_fullpaging equ 01Dh        ; 29
             ;
             ; Hay que hacerlo por ventana temporal: a estas alturas el
             ; bloque 0 ya tiene la pagina 8 (ver arriba), asi que no vale
-            ; escribir directamente en $0000. Se usa el bloque 6 porque a
-            ; estas alturas nadie lee todavia lo que hay ahi (parte de la
-            ; imagen de la CCP), y se restaura al salir.
+            ; escribir directamente en $0000. Se usa WINBLK (bloque 3,
+            ; memmap.inc) y se restaura al salir. Es seguro porque durante
+            ; la ventana solo se ejecuta codigo del bloque 4 (este mismo
+            ; fichero) y del 6 (map1blk, en la zona duplicada).
             ld   a, 0            ; pagina 0 (la ROM)
-            ld   e, 6            ; ventana: bloque 6 ($C000-$DFFF)
+            ld   e, WINBLK       ; ventana temporal (memmap.inc)
             call map1blk
-            ld   hl, 0C000h
+            ld   hl, WINBLK*2000h
             ld   (hl), 076h      ; HALT
-            ld   de, 0C001h
+            ld   de, WINBLK*2000h+1
             ld   bc, 8191
             ldir
-            ld   a, BANK0_BASE+6 ; restaurar la pagina de sistema
-            ld   e, 6
+            ld   a, BANK0_BASE+WINBLK  ; restaurar la pagina de sistema
+            ld   e, WINBLK
             call map1blk
 
-            ; --- senal de vida: mensaje en pantalla ---
-            ld   hl, signon_msg
+            ; --- banner de arranque ---
+            ld   hl, banner_msg
             call ?pmsg
 
             ret                  ; BIOSKRNL sigue con el bucle de INIT de disco
@@ -274,10 +334,23 @@ ims_wait:   in   a,(ClkPort)
             ret
 
 ; ---------------------------------------------------------------------
-; in_clear_screen / in_clear_attrs - pantalla a espacios, atributos a
-; tinta blanca/papel negro (nibble alto=papel, nibble bajo=tinta, ver
+; in_clear_screen / in_clear_attrs - pantalla a espacios y atributos a
+; papel azul / tinta amarilla brillante.
+;
+; Formato del atributo: nibble alto = papel, nibble bajo = tinta (ver
 ; DOC/superfast_wide_text_modes.md #5 -- NO el formato 3+3 estilo
-; Spectrum).
+; Spectrum). Y dentro de cada nibble, los bits son {brillo,verde,rojo,
+; azul} -- OJO, azul es el bit 0 y rojo el bit 1, no el orden GRB
+; habitual (SD81.v:1590-1593: "cred = ink_active[1], cgreen =
+; ink_active[2], cblue = ink_active[0], cbright = ink_active[3]").
+;
+;   azul            = 0001 = $1
+;   amarillo        = verde+rojo = 0110 = $6
+;   amarillo brillo = 1110 = $E
+;
+; Los atributos se ponen una sola vez aqui y ya no se vuelven a tocar:
+; "scroll" (chario.z80) mueve solo los caracteres, asi que el color es
+; uniforme en toda la pantalla y sobrevive al scroll sin trabajo extra.
 ; ---------------------------------------------------------------------
 in_clear_screen:
             ld   hl, DFILE_val+1
@@ -306,7 +379,7 @@ in_clear_attrs:
             ld   b, ROWS
 ica_row:    push bc
             ld   c, COLS
-            ld   a, 0Fh
+            ld   a, ATTR_SCREEN
 ica_col:    ld   (hl), a
             inc  hl
             dec  c
@@ -317,17 +390,20 @@ ica_col:    ld   (hl), a
             djnz ica_row
             ret
 
-; Mensajes de prueba, terminados en 0 (la convencion de ?pmsg -- NO el
-; $FF que usa el print_msg directo de banktest.asm).
+; Banner de arranque, terminado en 0 (la convencion de ?pmsg -- NO el
+; $FF que usa el print_msg directo de banktest.asm). Sustituye a los dos
+; mensajes de diagnostico ("INIT" y "NOCCP") que ya no hacen falta.
 ;
-; Ahora en ASCII normal: la fuente ya no es la ROM del ZX81 en su orden
-; nativo, sino la tabla ASCII/CP437 de font_image.z80. Antes iban como
-; codigos ZX81 ("INIT" = 46,51,46,57) y con la restriccion de usar SOLO
-; letras, porque los digitos del ZX81 (28-37) y su espacio caen por
-; debajo de $20 y ?co los tomaba por codigos de control. Eso se acabo:
-; ya se puede escribir cualquier texto imprimible tal cual.
-signon_msg: defb 'INIT', 0
-noccp_msg:  defb 'NOCCP', 0
+; En ASCII normal, y sin las contorsiones del 2.2: alli el banner tenia
+; que escribir los parentesis como "028h,'C',029h" porque la fuente era
+; la ROM del ZX81 en su orden nativo. Con font_image.z80 se escribe el
+; texto tal cual.
+;
+; El TPA va de $0100 a LDR_BASE ($DD00, donde empieza el cargador de
+; transitorios): $DC00 = 56320 bytes = 55K justos.
+banner_msg: defb 'CP/M Plus v3.0 - SD81Booster for Sinclair ZX81',0Dh,0Ah
+            defb 'Banked memory, 55K TPA',0Dh,0Ah
+            defb '(c) 2026 Wilco2009',0Dh,0Ah,000h
 
 ; =======================================================================
 ;  ldccp_real - banco 7 ($F704, hueco libre justo detras del bloque
@@ -373,7 +449,29 @@ ldccp_real: ld   hl, ccp$image
             ld   (ldc$dst), hl
             ld   a, ccp$image$padlen/128
             ld   (ldc$cnt), a
+            call ldc$copy
 
+            ; El cargador de transitorios (loader.z80) se copia igual, y
+            ; ademas es el caso facil: esta ensamblado en su direccion de
+            ; ejecucion, asi que origen y destino son la MISMA direccion
+            ; logica ($DD00) y lo unico que cambia es el banco. Se
+            ; recopia en cada arranque en caliente, junto con la CCP, por
+            ; si un programa se hubiera pasado de la raya.
+            ld   hl, LDR_BASE
+            ld   (ldc$src), hl
+            ld   (ldc$dst), hl
+            ld   a, LDR_LEN/128
+            ld   (ldc$cnt), a
+            call ldc$copy
+
+            ld   a, 1
+            call bnksel          ; usuario activo para "jmp ccp"
+            ret
+
+; ldc$copy - copia (ldc$cnt) bloques de 128 B de (ldc$src), banco de
+; sistema, a (ldc$dst), banco de usuario. Entra y sale con "sistema"
+; activo.
+ldc$copy:
 ldc$loop:   ; sistema activo aqui (al entrar, y al final de cada vuelta)
             ld   hl, (ldc$src)
             ld   de, @bnkbf
@@ -398,18 +496,16 @@ ldc$loop:   ; sistema activo aqui (al entrar, y al final de cada vuelta)
 
             xor  a
             call bnksel          ; sistema activo otra vez, para la
-                                 ; siguiente vuelta (o para el "ret" si
-                                 ; esta era la ultima -- boot$1 hace
-                                 ; "jmp ccp" justo despues, hace falta
-                                 ; "usuario" activo entonces)
+                                 ; siguiente vuelta (y para el "ret": el
+                                 ; llamante encadena otra copia). Quien
+                                 ; deja "usuario" puesto al final es
+                                 ; ldccp_real, que es lo que necesita el
+                                 ; "jmp ccp" de boot$1.
 
             ld   a, (ldc$cnt)
             dec  a
             ld   (ldc$cnt), a
             jr   nz, ldc$loop
-
-            ld   a, 1
-            call bnksel          ; usuario activo para "jmp ccp"
             ret
 
 ; ---------------------------------------------------------------------
@@ -452,18 +548,52 @@ call5_entry:
 ; ssize (RESBDOS.ASM) = 30, *2 = 60 -- valor literal aqui para no
 ; redefinir "ssize" (ya existe en RESBDOS.ASM, aunque haya dejado de
 ; usarse ahi) y evitar un "Mult. def."
-            ds   60
-lstack:
-
 ldc$src:    ds   2
 ldc$dst:    ds   2
 ldc$cnt:    ds   1
 
-; CPM3_SD81: guarda de tamano -- el siguiente bloque del banco 7 son las
-; variables de ?bank (bank.z80, $F7A4). Si este se pasara, lo pisaria en
-; silencio; con esto el "ds" sale negativo y el ensamblado falla.
+; CPM3_SD81: guarda de tamano. Antes rellenaba hasta $F7A4 (las
+; variables de ?bank, bank.z80); ahora para en DPBORG, porque ese hueco
+; lo ocupan los DPB (DPBORG) -- que TIENEN que estar en banco comun
+; funcion 31 de la BDOS sirva de algo. Ver memmap.inc y drvtbl.z80.
+; Del tramo DPBORG..$F7A4 se encarga la guarda de drvtbl.z80.
 
-            ds   0F7A4h-$
+            ds   DPBORG-$
+
+; ---------------------------------------------------------------------
+;  lstack, en el hueco de la tabla de fuentes.
+;
+;  Estaba aqui arriba, justo antes de la guarda, y al anadir la segunda
+;  copia a ldccp_real (el cargador de transitorios) el bloque se paso
+;  del $F7A4 por 8 bytes. La pila no tiene por que estar pegada a
+;  ldccp_real: le basta con ser banco 7, asi que se muda a la reserva
+;  que ya usamos para @bnkbf, el estado de biosw, bank$exit y las
+;  variables de ?move -- los glifos de los codigos de control, que no se
+;  imprimen nunca porque ?co filtra todo lo que esta por debajo de $20.
+;  Aqui se lleva los codigos 24-31 (CAN, EM, SUB, ESC, FS, GS, RS, US).
+; ---------------------------------------------------------------------
+            org  0F8C0h
+
+; ssize (RESBDOS.ASM) = 30, *2 = 60 -- valor literal aqui para no
+; redefinir "ssize" (ya existe en RESBDOS.ASM, aunque haya dejado de
+; usarse ahi) y evitar un "Mult. def."
+            ds   60
+lstack:
+
+; disk_handle (DISKHANDLE, memmap.inc): los 4 handles SD. Aqui y no en
+; diskio.z80 para que MOUNT3.COM los alcance desde el TPA -- ver la nota
+; en memmap.inc y en sd_login.
+;
+; Arrancan a $FF = "sin abrir". El valor sale de la imagen, que se carga
+; una sola vez: en el arranque en CALIENTE no se reinicializan, y eso es
+; lo que hace que un montaje sobreviva a un warm boot.
+;
+; El "ds DISKHANDLE-$" de delante es guarda en los dos sentidos: si
+; lstack creciera se pasaria de $F8FC y el "ds" saldria negativo.
+            ds   DISKHANDLE-$
+            defb 0FFh,0FFh,0FFh,0FFh
+
+            ds   0F900h-$        ; guarda: detras empieza la fuente (cod 32)
 
 ; =====================================================================
 ;  FIN del bloque del banco 7. Vuelta a memoria normal.

@@ -15,6 +15,11 @@
 ;  actual (@dbnk <> @cbnk), igual que hace ramdisk_read/write con el
 ;  disco RAM. Sin este paso, escribir directamente en (@dma) fallaria
 ;  en cuanto el llamador este en un banco distinto al que ve el driver.
+;
+;  Ese trasvase NO se hace aqui: lo hacen xfer$out/xfer$in, en la zona
+;  duplicada de bank.z80. Este fichero se ensambla en memoria bancada,
+;  asi que no puede sobrevivir a un cambio de banco -- ver la nota
+;  larga junto a xfer$out.
 ; =====================================================================
 
 ;            public sd_read,sd_write,sd_login,sd_init
@@ -30,8 +35,27 @@
 sd_init:    ret                 ; nada que hacer: el fopen es perezoso,
                                  ; ocurre en sd_login (primer select)
 
+; sd_login - primer select de la unidad. Abre su .IMG, pero SOLO si no
+; hay ya un handle puesto.
+;
+; Antes reabria siempre, y eso hacia imposible montar otra imagen: MOUNT
+; deja el handle nuevo en disk_handle y acto seguido hace un reset de
+; unidad (BDOS 37) para que la BDOS relea el directorio -- o sea, provoca
+; el proximo login, que machacaba el handle recien puesto reabriendo
+; A.IMG. El disco montado volvia a ser el del arranque.
+;
+; $FF = "sin abrir" es el valor inicial que trae la imagen (init.z80).
 sd_login:   ld   a,(@rdrv)
-            push af
+            ld   e,a
+            ld   d,0
+            ld   hl,DISKHANDLE
+            add  hl,de
+            ld   a,(hl)
+            inc  a
+            ret  nz                  ; ya hay handle -- respetarlo
+
+            push hl                  ; HL = &disk_handle[@rdrv]
+            ld   a,(@rdrv)
             ld   hl,diskname_a
             or   a
             jr   z, sdl_open
@@ -43,13 +67,8 @@ sd_login:   ld   a,(@rdrv)
             jr   z, sdl_open
             ld   hl,diskname_d
 sdl_open:   call sd_fopen            ; A = handle (0FFh si no existe)
-            ld   b,a
-            pop  af                  ; A = @rdrv otra vez
-            ld   e,a
-            ld   d,0
-            ld   hl,disk_handle
-            add  hl,de
-            ld   (hl),b
+            pop  hl
+            ld   (hl),a
             ret
 
 ; curhandle_sd - A = handle SD de la unidad @rdrv (0-3)
@@ -57,7 +76,7 @@ curhandle_sd:
             ld   a,(@rdrv)
             ld   e,a
             ld   d,0
-            ld   hl,disk_handle
+            ld   hl,DISKHANDLE
             add  hl,de
             ld   a,(hl)
             ret
@@ -69,30 +88,14 @@ sd_read:    call compute_offset
             ld   hl,@bnkbf
             call sd_fread            ; A=status (0 OK, 1 short/EOF)
             push af
-            ; --- @bnkbf -> (@dma) en banco @dbnk ---
-            ld   a,(@dbnk)
-            call ?bank
-            ld   hl,@bnkbf
-            ld   de,(@dma)
-            ld   bc,128
-            ldir
-            ld   a,(@cbnk)
-            call ?bank               ; restaura
+            call xfer$out            ; @bnkbf -> (@dma) en banco @dbnk
             pop  af
             or   a
             ret  z
             ld   a,1
             ret
 
-sd_write:   ; --- (@dma) en banco @dbnk -> @bnkbf ---
-            ld   a,(@dbnk)
-            call ?bank
-            ld   hl,(@dma)
-            ld   de,@bnkbf
-            ld   bc,128
-            ldir
-            ld   a,(@cbnk)
-            call ?bank               ; restaura
+sd_write:   call xfer$in             ; (@dma) en banco @dbnk -> @bnkbf
 
             call compute_offset
             call curhandle_sd
@@ -105,26 +108,33 @@ sd_write:   ; --- (@dma) en banco @dbnk -> @bnkbf ---
             ld   a,1
             ret
 
-; compute_offset - sd_off = (@trk*26 + @sect) * 128, igual que en el 2.2
-; (bios.z80/sddisk.z80), solo que lee @trk/@sect (de BIOSKRNL) en vez de
-; las variables trk/sec propias del 2.2.
+; compute_offset - sd_off = (@trk*SPT + @sect) * 128, el desplazamiento
+; en bytes dentro del .IMG.
+;
+; Con SPT=128 (formato de 2 MB) las dos multiplicaciones son
+; desplazamientos: antes SPT valia 26 y hacia falta un bucle de multiplicar
+; de 8 vueltas. Es la razon de haber elegido una potencia de dos al disenar
+; el formato -- ver memory_map.md.
+;
+;   lba    = trk*128 + sect     cabe en 14 bits (trk y sect van de 0 a 127)
+;   offset = lba*128            21 bits: HL lo bajo, D el byte alto
+;
+; El maximo es 127*16384 + 127*128 = $1FFF80, justo por debajo de los 2 MB.
+; sd_off+3 se pone a cero: el tope que soporta esta rutina son 16 MB.
 compute_offset:
-            ld   de,(@trk)
-            ld   a,26
-            ld   hl,0
-            ld   b,8
-co_mul:     add  hl,hl
-            rlca
-            jr   nc,co_ms
-            add  hl,de
-co_ms:      djnz co_mul
+            ld   hl,(@trk)
+            ld   b,7
+co_trk:     add  hl,hl               ; HL = trk*128
+            djnz co_trk
             ld   de,(@sect)
-            add  hl,de               ; HL = lba = trk*26 + sect
+            add  hl,de               ; HL = lba
+
             ld   d,0
             ld   b,7
-co_shl:     add  hl,hl
+co_shl:     add  hl,hl               ; DHL = lba*128
             rl   d
             djnz co_shl
+
             ld   (sd_off),hl
             ld   a,d
             ld   (sd_off+2),a
@@ -136,10 +146,67 @@ co_shl:     add  hl,hl
 ;  Disco RAM (unidad E) -- map1blk + ventana, ver memory_map.md
 ; ---------------------------------------------------------------------
 
-ram_init:   ret
+; ---------------------------------------------------------------------
+; ram_init - formatea el directorio del disco RAM si hace falta.
+;
+; Se llama UNA vez por arranque en frio, desde el bucle de unidades de
+; "boot:" (BIOSKRNL.ASM) via el puntero INIT del XDPH. El arranque en
+; caliente no pasa por ahi (wboot va directo a boot$1), asi que el
+; contenido sobrevive a un Ctrl-C o a que termine un programa.
+;
+; El directorio es el bloque 0 = pista 0 = la pagina RAMDISK_BASE
+; entera: 256 entradas de 32 B = 8192 B = un bloque justo (BLS=8192).
+;
+; POR QUE NO SE FORMATEA SIEMPRE. Las paginas 15-63 no las toca nadie al
+; cargar el sistema (la imagen va a las paginas 3-7), asi que el disco
+; RAM sobrevive incluso a recargar CP/M desde BASIC. Formatear a ciegas
+; lo borraria cada vez, que en un ZX81 -- donde se reinicia a menudo --
+; seria bastante molesto.
+;
+; COMO SE DETECTA. Sin firmas ni metadatos: se mira si el directorio ES
+; un directorio. El primer byte de cada entrada solo puede valer $E5
+; (libre), $00-$0F (numero de usuario), $20 (etiqueta de disco) o $21
+; (sello de tiempo). Cualquier otra cosa en cualquiera de las 256
+; entradas significa que ahi hay basura y toca formatear.
+;
+; Es fiable de sobra: con RAM aleatoria, cada byte tiene ~7% de parecer
+; valido, asi que los 256 a la vez son practicamente imposibles.
+; ---------------------------------------------------------------------
+ram_init:   ld   a,RAMDISK_BASE      ; pagina del directorio en la ventana
+            ld   e,WINBLK
+            call map1blk
+
+            ld   hl,WINBLK*2000h
+            ld   b,0                 ; 256 entradas
+ri$scan:    ld   a,(hl)
+            cp   0E5h
+            jr   z,ri$next           ; entrada libre
+            cp   010h
+            jr   c,ri$next           ; 0-15: numero de usuario
+            cp   020h
+            jr   c,ri$fmt            ; 16-31: imposible
+            cp   022h
+            jr   nc,ri$fmt           ; 34 en adelante: imposible
+ri$next:    ld   de,32
+            add  hl,de
+            djnz ri$scan
+            jr   ri$done             ; los 256 pasan: es un directorio
+
+ri$fmt:     ld   hl,WINBLK*2000h     ; formatear: el bloque 0 a $E5
+            ld   (hl),0E5h
+            ld   de,WINBLK*2000h+1
+            ld   bc,8191
+            ldir
+
+ri$done:    ld   a,BANK0_BASE+WINBLK ; devolver la ventana a su pagina
+            ld   e,WINBLK
+            call map1blk
+            xor  a
+            ret
+
 ram_login:  ret
 
-; map1blk se declara en bank.z80 (banco 3 duplicado); aqui solo extrn.
+; map1blk se declara en bank.z80 (zona duplicada, $DE00); aqui solo extrn.
 ;            extrn  map1blk
 
 rd$winaddr: ds   2              ; direccion Z80 real de la ventana
@@ -192,27 +259,13 @@ ram_read:   call rdx$setup
             ld   e,WINBLK
             call map1blk             ; restaura
 
-            ld   a,(@dbnk)
-            call ?bank
-            ld   hl,@bnkbf
-            ld   de,(@dma)
-            ld   bc,128
-            ldir
-            ld   a,(@cbnk)
-            call ?bank               ; restaura
+            call xfer$out            ; @bnkbf -> (@dma) en banco @dbnk
             xor  a                   ; siempre OK
             ret
 
 ram_write:  call rdx$setup
 
-            ld   a,(@dbnk)
-            call ?bank
-            ld   hl,(@dma)
-            ld   de,@bnkbf
-            ld   bc,128
-            ldir
-            ld   a,(@cbnk)
-            call ?bank               ; restaura
+            call xfer$in             ; (@dma) en banco @dbnk -> @bnkbf
 
             ld   a,(rd$rdpage)
             ld   e,WINBLK
@@ -228,9 +281,13 @@ ram_write:  call rdx$setup
             ret
 
 ; ---------------------------------------------------------------------
-;  Variables (zona comun -- datos, no codigo)
+;  Variables. OJO: estan en el BANCO DE SISTEMA (~$85xx), no en
+;  comun. Solo se tocan desde estas rutinas, que corren siempre bajo
+;  sistema -- el unico tramo con el banco de usuario puesto es el LDIR
+;  de xfer$out/xfer$in, y ese vive en la zona duplicada (bank.z80).
 ; ---------------------------------------------------------------------
-disk_handle: defs 4               ; handle SD por unidad (A-D)
+; disk_handle NO esta aqui: vive en el banco comun (DISKHANDLE,
+; memmap.inc) para que MOUNT3.COM lo alcance desde el TPA.
 sd_off:      defs 4
 sd_handle:   defs 1               ; scratch temporal, usa sddisk.z80
 
@@ -239,24 +296,13 @@ diskname_b: defb 'B.IMG',0
 diskname_c: defb 'C.IMG',0
 diskname_d: defb 'D.IMG',0
 
-; CSV/ALV por unidad (scratch del BDOS, no son datos de disco). ALV va
-; a doble bit por bloque -- obligatorio en CP/M 3 banked (a diferencia
-; del 2.2, que usaba 1 bit/bloque -- alv0-3 de 31 B en bios.z80 no
-; sirven tal cual aqui). E (disco RAM) es medio fijo (CKS=8000h en
-; dpb_ram), asi que no lleva CSV -- nos ahorramos ese buffer.
-;            public csv_a,csv_b,csv_c,csv_d
-;            public alv_a,alv_b,alv_c,alv_d,alv_e
-
-csv_a:      defs 16                ; (DRM/4)+1 = (63/4)+1, redondeado
-csv_b:      defs 16
-csv_c:      defs 16
-csv_d:      defs 16
-
-alv_a:      defs 63                ; (DSM/4)+2 = (242/4)+2, doble bit
-alv_b:      defs 63
-alv_c:      defs 63
-alv_d:      defs 63
-alv_e:      defs 14                ; (DSM/4)+2 = (48/4)+2, disco RAM
+; Los vectores ALV ya NO estan aqui: con el formato de 2 MB pasan de 63 a
+; 257 bytes por unidad y no caben en el hueco del XIOS, que tiene que
+; acabar antes de $8A00. Se reservan detras de la imagen de la CCP --
+; ver ALV_BASE en memmap.inc y la reserva con guardas en system.z80.
+;
+; Y no hay CSV: el DPB declara el medio como fijo (CKS=8000h), asi que no
+; existe vector de checksum. Ver la nota en dpb_sd (drvtbl.z80).
 
 ; mcu_send/mcu_recv/sd_fopen/sd_fseek/sd_fread/sd_fwrite/sd_fclose y la
 ; variable sd_handle (protocolo MCU, sin cambios respecto al 2.2)

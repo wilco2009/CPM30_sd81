@@ -1,12 +1,18 @@
 ; =====================================================================
-;  bank.z80 - Todo lo que necesita vivir duplicado al final del banco 3
-;  ($7E00-$7FFF, en la pagina 3 -sistema- y la 11 -usuario-, mismo
-;  offset): ?bank, map1blk, y la tabla de saltos del BIOS (?boot/?wboot/
-;  ?const/.../?xmov -- movida aqui desde BIOSKRNL.ASM).
+;  bank.z80 - Todo lo que necesita vivir DUPLICADO, o sea existir byte a
+;  byte en los dos contextos a la misma direccion: ?bank, map1blk, y la
+;  tabla de saltos del BIOS (?boot/?wboot/?const/.../?xmov -- movida aqui
+;  desde BIOSKRNL.ASM).
+;
+;  Vive en $DE00-$DFFF (SWITCHER_BASE, bloque 6), justo encima del
+;  cargador de transitorios y por tanto por encima de @MXTPA. Estuvo en
+;  $7E00-$7FFF, en mitad del TPA y sin proteger, hasta que Turbo Pascal
+;  le cargo sus mensajes encima -- ver memmap.inc y memory_map.md.
 ;
 ;  Dos razones distintas para necesitar la duplicacion, no una:
 ;   1) ?bank es el UNICO codigo cuyo propio "ret" se ejecuta justo
-;      DESPUES de haber cambiado el banco 3 bajo sus pies -- asi lo usa
+;      DESPUES de haber cambiado bajo sus pies el bloque donde vive --
+;      asi lo usa
 ;      BIOSKRNL.ASM (bnksel: sta @cbnk / jmp ?bank, un salto de cola: el
 ;      "ret" final de ?bank vuelve directamente al programa de usuario
 ;      cuando el contexto activo ya es "usuario").
@@ -114,13 +120,27 @@ bank$exit:  ld   hl,(bank$retaddr)
             ld   hl,(bank$savehl)
 bank$jp:    jp   0000h           ; automodificado, ver arriba
 
-            ds   0F8B8h-$        ; guarda: detras empieza la fuente (cod 23)
+; ---------------------------------------------------------------------
+;  Variables de ?xmove/?move. Estaban en move.z80, o sea en memoria
+;  BANCADA -- y ?move las escribe a un lado de un cambio de banco y las
+;  lee al otro, asi que leia la copia del banco equivocado (en el banco
+;  de usuario ese tramo es TPA). Tienen que ser comunes, como xmv$pend,
+;  que ya lo era por la misma razon.
+; ---------------------------------------------------------------------
+xmv$dbnk:   ds   1              ; contexto destino memorizado por ?xmove
+xmv$sbnk:   ds   1              ; contexto origen
+mv$de:      ds   2              ; puntero origen, avanza entre trozos
+mv$hl:      ds   2              ; puntero destino, avanza entre trozos
+mv$cnt:     ds   2              ; bytes restantes
+mv$len:     ds   1              ; longitud del trozo actual (1-128)
+
+            ds   0F8C0h-$        ; guarda: detras empieza la fuente (cod 24)
 
             org  062E9h
 
 ; ---------------------------------------------------------------------
 ;  Tabla de saltos del BIOS -- movida aqui desde BIOSKRNL.ASM (ver la
-;  nota en ese fichero). Duplicada al final del banco 3 junto con
+;  nota en ese fichero). Duplicada junto con
 ;  ?bank/map1blk porque programas de usuario reales llaman a estas
 ;  entradas DIRECTAMENTE (sin pasar por BDOS) con "usuario" activo.
 ;  Hay tres formas de entrada, segun quien llame y que necesite:
@@ -161,24 +181,25 @@ bank$jp:    jp   0000h           ; automodificado, ver arriba
 ;            extrn  multio,flush,setbnk
 ;            extrn  ?cinit,?move,?xmove,?time
 
-DUPWIN      equ 5              ; banco usado como ventana para duplicar
-                                ; este modulo en el arranque
-
-SWITCHER_BASE equ 07E00h       ; banco 3, ultimos 512 B ($7E00-$7FFF)
-SWITCHER_LEN  equ 0200h
-BANK3_ADDR    equ 06000h
-SWITCHER_OFF  equ SWITCHER_BASE-BANK3_ADDR
-DUPWIN_ADDR   equ 0A000h
+; SWITCHER_BASE/SWITCHER_LEN/SWITCHER_BLK salen de memmap.inc -- ver alli
+; la nota de por que la zona duplicada esta donde esta.
+DUPWIN      equ 5              ; bloque usado como ventana para duplicar
+                                ; este modulo en el arranque. No puede ser
+                                ; SWITCHER_BLK (es el origen) ni el 3, que
+                                ; es desde donde se ejecuta dup_switcher.
+DUPWIN_ADDR   equ DUPWIN*2000h
+SWITCHER_OFF  equ SWITCHER_BASE-(SWITCHER_BLK*2000h)
 
 ; ---------------------------------------------------------------------
-; dup_switcher - copia este modulo (ya cargado en la pagina de sistema,
-; la 3) a la pagina de usuario (11), mismo offset dentro de la pagina.
+; dup_switcher - copia este modulo (ya cargado en la pagina de sistema
+; de SWITCHER_BLK) a la pagina de usuario de ese mismo bloque, al mismo
+; offset.
 ; Llamar UNA vez en el arranque, antes de que nada intente ejecutar
 ; ?bank estando en contexto usuario. No necesita vivir en la zona
 ; duplicada: solo se llama una vez, con "sistema" siempre activo.
 ; ---------------------------------------------------------------------
 dup_switcher:
-            ld   a, BANK1_BASE+3
+            ld   a, BANK1_BASE+SWITCHER_BLK
             ld   e, DUPWIN
             call map1blk
             ld   hl, SWITCHER_BASE
@@ -191,8 +212,13 @@ dup_switcher:
             ret
 
 ; =======================================================================
-;  Zona duplicada -- banco 3, $7E00-$7FFF. Todo lo de aqui abajo se
+;  Zona duplicada -- $DE00-$DFFF (bloque 6). Todo lo de aqui abajo se
 ;  copia tambien a la pagina de usuario por dup_switcher, arriba.
+;
+;  Estuvo en $7E00-$7FFF, y era un fallo serio: esa direccion cae EN
+;  MITAD DEL TPA y nada la protegia. Turbo Pascal cargaba sus mensajes
+;  encima y destrozaba el conmutador. Ahora vive por encima de @MXTPA,
+;  pegada al cargador. Ver memmap.inc y memory_map.md.
 ; =======================================================================
 
             org  SWITCHER_BASE
@@ -214,7 +240,7 @@ map1blk:    push bc
 ; (usuario). Reprograma los bancos 0-6 (el 7, comun, no se toca).
 ; Llamado por BIOSKRNL.ASM via bnksel (salto de cola, no CALL) -- el
 ; "ret" de aqui es lo que devuelve el control al programa de usuario
-; cuando A=1, ya con el banco 3 mostrando la pagina de usuario.
+; cuando A=1, ya con el bloque mostrando la pagina de usuario.
 ;
 ; Usa su PROPIA pila temporal (bank$stack, banco 7) mientras dura el
 ; bucle, en vez de la del llamante. Dos bugs reales encontrados en
@@ -468,15 +494,37 @@ bw$back:    ld   (bw$a), a       ; valor devuelto
             ex   de,hl           ; HL=destino+n, DE=origen+n (orden CP/M)
             ret
 
-mov$bank:   xor  a
-            call ?bank           ; ?bank ya preserva HL (ver su nota)
-            jmp  ?move
+mov$bank:   jmp  ?move           ; ?move vive tambien en esta zona duplicada
+                                  ; y gestiona el mismo sus cambios de
+                                  ; banco (termina restaurando @cbnk), asi
+                                  ; que ya no hace falta pasar a sistema
+                                  ; antes de saltar.
 ?tim:       xor  a
             call bnksel
             jmp  ?time
 ?bnksl:     jmp  bnksel          ; el propio bnksel YA hace el cambio
-?stbnk:     xor  a
+; SETBNK (funcion 28 del BIOS): A = banco donde esta el DMA. OJO, el
+; "xor a" que necesita el cambio a sistema DESTRUYE ese argumento -- y
+; ?bank preserva AF, asi que lo que vuelve es el cero, no lo que paso el
+; llamante. Tal cual estaba, "sta @dbnk" (BIOSKRNL.ASM) guardaba SIEMPRE
+; un 0, o sea "el DMA esta en el banco de sistema".
+;
+; Sintoma: al cargar un .COM, la BDOS hace "mvi a,1 / call setbnkf"
+; (BDOS.ASM:5142) para decir que el buffer esta en el banco de USUARIO,
+; pero llegaba un 0. xfer$out veia @dbnk = @cbnk = 0, se ahorraba el
+; cambio de banco, y los 128 bytes del sector acababan en $0100 del banco
+; de SISTEMA. En el de usuario seguia la CCP intacta, asi que el "ret"
+; del cargador la reiniciaba: volvia el prompt y "no pasaba nada".
+;
+; Los buffers de directorio SI funcionaban, y por eso el DIR nunca dio la
+; cara: viven en el banco de sistema (BANK=0 en el BCB, drvtbl.z80), o
+; sea que el 0 equivocado era justo el valor correcto por casualidad.
+;
+; B sobrevive al cambio porque ?bank hace push/pop de BC.
+?stbnk:     ld   b,a
+            xor  a
             call bnksel
+            ld   a,b
             jmp  setbnk
 ?xmov:      xor  a
             call ?bank           ; ver la nota en ?mov
@@ -498,7 +546,157 @@ mov$bank:   xor  a
             jmp  ldccp_real
 
 ; =====================================================================
-;  FIN de la zona duplicada. A partir de aqui, memoria normal.
+;  xfer$out / xfer$in - mueven los 128 bytes de un sector entre @bnkbf
+;  (banco 7, comun) y (@dma) en el banco @dbnk.
+;
+;    xfer$out:  @bnkbf --> (@dma)     lectura de disco
+;    xfer$in:   (@dma) --> @bnkbf     escritura a disco
+;
+;  POR QUE VIVEN AQUI, en la zona duplicada, y no en diskio.z80.
+;  El driver hacia el LDIR el mismo, asi:
+;
+;      ld a,(@dbnk) / call ?bank / ldir / ld a,(@cbnk) / call ?bank
+;
+;  ...pero diskio.z80 se ensambla en $8000+, o sea en memoria BANCADA.
+;  En cuanto ?bank selecciona el banco de usuario, todo $8000-$DFFF
+;  cambia bajo los pies del programa: ?bank vuelve correctamente (vive
+;  duplicado) pero salta a una direccion $80xx que en el banco de
+;  usuario es TPA vacia. De ahi el deslizamiento por NOPs hasta el
+;  relleno de HALT de la pagina 0 que se veia en la traza.
+;
+;  Aqui no pasa: este bloque esta duplicado en los dos contextos, asi
+;  que sigue existiendo -- byte a byte, en la misma direccion -- a los
+;  dos lados del cambio de banco. Es la misma razon por la que ?mov
+;  resuelve aqui su caso normal.
+;
+;  @dma y @dbnk viven en memoria bancada ($610C/$610F), asi que se leen
+;  ANTES de tocar el paginado. @cbnk no: esta en $E064, comun, y por eso
+;  se puede releer despues para volver al banco del llamante.
+;
+;  Si origen y destino son el mismo banco no se toca el paginado.
+; =====================================================================
+xfer$out:   ld   c,0
+            jr   xfer$go
+xfer$in:    ld   c,1
+xfer$go:    ld   hl,@bnkbf
+            ld   de,(@dma)       ; bancado: leerlo ahora
+            ld   a,c
+            or   a
+            jr   z,xf$dir
+            ex   de,hl           ; escritura: (@dma) es el origen
+xf$dir:     ld   a,(@dbnk)       ; bancado: leerlo ahora
+            ld   c,a
+            ld   a,(@cbnk)
+            cp   c
+            jr   z,xf$same       ; mismo banco: nada que conmutar
+            ld   a,c
+            call ?bank
+            ld   bc,128
+            ldir
+            ld   a,(@cbnk)       ; comun: visible con el otro banco puesto
+            call ?bank
+            ret
+xf$same:    ld   bc,128
+            ldir
+            ret
+
+; =====================================================================
+;  ?move - HL = destino, DE = origen, BC = contador. Devuelve HL y DE
+;  avanzados y BC = 0. Copia en trozos de hasta 128 B via @bnkbf (banco
+;  7, alcanzable pase lo que pase con el paginado).
+;
+;  Contrato (BDOS30.ASM 5551-5568, las dos llamadas a deblock12->xmovef
+;  antes de una lectura/escritura de disco):
+;    ?xmove: B = contexto destino, C = contexto origen. Solo memoriza.
+;    ?move:  copia entre los contextos memorizados.
+;
+;  A ?move solo se llega con un XMOVE pendiente: el caso normal (copia
+;  dentro del banco activo) lo resuelve la entrada ?mov de mas arriba.
+;
+;  POR QUE ESTA AQUI Y NO EN move.z80, que es de donde viene. ?move
+;  cambia de banco DOS VECES por trozo, y entre medias sigue ejecutando
+;  instrucciones y leyendo sus punteros. Desde $8xxx eso es imposible:
+;  al seleccionar el banco de usuario, tanto el codigo como las
+;  variables desaparecen y en su lugar queda la TPA. La zona duplicada
+;  existe byte a byte en los dos contextos, asi que aqui si funciona; y
+;  las variables (mv$de/mv$hl/mv$cnt/mv$len/xmv$sbnk/xmv$dbnk) estan en
+;  banco 7 por el mismo motivo -- ver la nota junto a bank$exit.
+; =====================================================================
+?move:      xor  a
+            ld   (xmv$pend),a    ; XMOVE solo vale para este ?move
+
+            ld   (mv$de),de
+            ld   (mv$hl),hl
+            ld   (mv$cnt),bc
+
+mv$loop:    ld   de,(mv$cnt)
+            ld   a,d
+            or   e
+            jr   z, mv$done      ; restante=0 -> terminado
+
+            ; trozo = min(restante,128) -> A
+            ld   a,d
+            or   a
+            jr   nz, mv$t128     ; D<>0 -> restante>=256 -> trozo=128
+            ld   a,e
+            cp   129
+            jr   nc, mv$t128     ; E>=129 -> trozo=128
+            ld   a,e             ; restante<=128 -> trozo=restante
+            jr   mv$gotlen
+mv$t128:    ld   a,128
+mv$gotlen:  ld   (mv$len),a
+
+            ; --- fase 1: contexto origen -> @bnkbf ---
+            ld   de,(mv$de)
+            ld   hl,@bnkbf
+            ld   a,(xmv$sbnk)
+            call ?bank
+            ld   a,(mv$len)
+            ld   c,a
+            ld   b,0
+            ex   de,hl           ; HL=origen real, DE=@bnkbf. El LDIR va
+                                  ; de (HL) a (DE): la version anterior
+                                  ; tenia los dos punteros al reves y
+                                  ; copiaba @bnkbf SOBRE el origen.
+            ldir
+            ld   (mv$de),hl      ; puntero origen avanzado
+
+            ; --- fase 2: @bnkbf -> contexto destino ---
+            ld   hl,@bnkbf       ; HL=origen del LDIR (@bnkbf)
+            ld   de,(mv$hl)      ; DE=destino del LDIR (destino real)
+            ld   a,(xmv$dbnk)
+            call ?bank
+            ld   a,(mv$len)
+            ld   c,a
+            ld   b,0
+            ldir                 ; @bnkbf -> destino real; avanza DE
+            ld   (mv$hl),de      ; puntero destino avanzado
+
+            ; --- restante -= trozo ---
+            ld   hl,(mv$cnt)
+            ld   a,(mv$len)
+            ld   e,a
+            ld   d,0
+            or   a
+            sbc  hl,de
+            ld   (mv$cnt),hl
+            jr   mv$loop
+
+mv$done:    ld   a,(@cbnk)       ; deja el hardware como estaba al entrar
+            call ?bank
+            ld   de,(mv$de)
+            ld   hl,(mv$hl)
+            ld   bc,0
+            ret
+
+; =====================================================================
+;  FIN de la zona duplicada. A partir de aqui, memoria normal: el "org"
+;  de abajo devuelve el contador a $8000, que es donde sigue el XIOS
+;  (move.z80, diskio.z80, drvtbl.z80, chario.z80, init.z80).
+;
+;  La nota historica que sigue se refiere a cuando la zona duplicada
+;  estaba en $7E00-$7FFF; las direcciones que menciona son las de
+;  entonces.
 ;
 ;  CPM3_SD81: este "org" FALTABA, y era un bug real y grave. El bloque
 ;  duplicado son los 512 bytes $7E00-$7FFF (SWITCHER_LEN), pero la tabla
@@ -528,5 +726,11 @@ mov$bank:   xor  a
 ;  desplaza ~228 bytes hacia arriba; sigue cabiendo de sobra antes del
 ;  "org 08900h" de BDOS.ASM.
 ; =====================================================================
+
+; Guarda de tamano: si la zona duplicada se pasara de su ultimo byte, el
+; "org" de abajo NO daria error (dos org que se pisan son silenciosos en
+; zmac) y lo de mas alla se ensamblaria encima. Este "ds" si falla.
+; Ademas rellena hasta el final, que es justo lo que copia dup_switcher.
+            ds   SWITCHER_BASE+SWITCHER_LEN-$
 
             org  08000h

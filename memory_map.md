@@ -2057,13 +2057,16 @@ envuelven -- las llama la BDOS bancada, que ya esta en sistema, y ademas
 
 En `$F880-$F8A7`, sobre los glifos de los codigos 16-20 de la tabla de
 fuentes -- la "reserva" del banco 7 que teniamos apuntada. `genfont.py`
-emite ahora desde el codigo 21 (`FIRST`). Reparto actual de ese hueco:
+emite ahora desde el codigo 32 (`FIRST`). Reparto actual de ese hueco:
 
 | Rango | Uso |
 |---|---|
 | `$F800-$F87F` | `@bnkbf` (glifos 0-15) |
 | `$F880-$F8A7` | estado y pila de `biosw` (glifos 16-20) |
-| `$F8A8-$FFFF` | fuente real, codigos 21-255 |
+| `$F8A6-$F8B1` | `bank$exit` (glifos 21-22) |
+| `$F8B2-$F8BF` | variables de `?xmove`/`?move` (glifo 23) |
+| `$F8C0-$F8FF` | `lstack`, la pila de la BDOS (glifos 24-31) |
+| `$F900-$FFFF` | fuente real, codigos 32-255 |
 
 ### Y un solapamiento silencioso corregido de paso
 
@@ -2147,3 +2150,839 @@ codigo propio.
 una implementacion -- se resuelve con un alias, porque la implementacion
 ya existe con la otra grafia. Un stub ahi no falla: **suplanta**, que es
 mucho peor.
+
+## La regla que faltaba: quien cambia de banco tiene que sobrevivir al cambio
+
+Al empezar con el disco aparecio, de golpe, la misma equivocacion en tres
+sitios distintos. Es la misma familia que el bug 4, pero al reves: alli el
+problema era codigo que estaba duplicado **sin querer**; aqui es codigo que
+**tenia** que estarlo y no lo estaba.
+
+El patron equivocado, tal cual estaba escrito en `diskio.z80`:
+
+```
+            ld   a,(@dbnk)
+            call ?bank
+            ld   hl,@bnkbf
+            ld   de,(@dma)
+            ld   bc,128
+            ldir
+            ld   a,(@cbnk)
+            call ?bank
+```
+
+Parece inofensivo y es letal. `diskio.z80` se ensambla en `$8000+`, o sea
+en memoria **bancada**. En cuanto `?bank` selecciona el banco de usuario,
+todo `$8000-$DFFF` cambia bajo los pies del programa: `?bank` vuelve
+correctamente -- vive en la zona duplicada -- pero salta a una direccion
+`$80xx` que en el banco de usuario es TPA vacia. De ahi el deslizamiento
+por NOPs hasta el relleno de `$76` de la pagina cero que se veia en la
+traza al arrancar con `A.IMG` presente.
+
+Y lo mismo con las **variables**: `?move` guardaba `mv$de`/`mv$hl`/`mv$cnt`
+en `move.z80`, tambien bancado, y las releia despues de cambiar de banco.
+Leia la copia del otro contexto, que ahi no es ni siquiera una copia: es
+TPA.
+
+La regla, enunciada de una vez:
+
+> **Todo lo que se ejecuta o se lee a los dos lados de un cambio de banco
+> tiene que vivir en memoria que exista a los dos lados**: banco 7 (comun,
+> una sola copia) o la zona duplicada `$7E00-$7FFF` (dos copias identicas,
+> congeladas en el arranque por `dup_switcher`). Codigo puede ir en
+> cualquiera de las dos. **Variables, solo en banco 7** -- en la zona
+> duplicada hay dos copias y se escribiria una para leer la otra, que es
+> exactamente el bug 4.
+
+Lo que se hizo:
+
+| Que | Estaba en | Pasa a |
+|---|---|---|
+| el `LDIR` de sector entre `@bnkbf` y `(@dma)` | repetido 4 veces en `diskio.z80` (bancado) | `xfer$out`/`xfer$in`, zona duplicada |
+| el cuerpo de `?move` | `move.z80` (bancado) | zona duplicada |
+| `xmv$dbnk`/`xmv$sbnk`/`mv$de`/`mv$hl`/`mv$cnt`/`mv$len` | `move.z80` (bancado) | banco 7, `$F8B2` |
+
+`@cbnk` no hizo falta moverlo: DRI ya lo tiene en el `dseg` residente
+(`$E064`), precisamente por esto -- hay que poder releerlo con el otro
+banco puesto para saber a cual volver. `@dma` y `@dbnk` no (`$610C`/`$610F`),
+asi que se leen **antes** de tocar el paginado.
+
+`?xmove` si puede quedarse donde estaba: no conmuta nada, solo memoriza.
+
+### De paso, dos cosas mas
+
+`?move` tenia los dos punteros de la fase 1 cambiados: con `HL=@bnkbf` y
+`DE=origen`, el `LDIR` copia `(HL)->(DE)`, o sea `@bnkbf` **encima del
+origen**. Nunca habia saltado porque a ese camino solo se llega con un
+XMOVE pendiente, y XMOVE solo lo usa la E/S de disco -- que hasta ahora no
+habia llegado a ejecutarse.
+
+Y `mov$bank` ya no necesita `xor a / call ?bank` antes del `jmp ?move`:
+ahora `?move` esta en la zona duplicada y gestiona el mismo sus cambios de
+banco.
+
+**Leccion**: la pregunta antes de escribir `call ?bank` no es "¿estan los
+datos donde toca?" sino "¿donde estare yo mismo cuando esto vuelva?".
+
+## Los tres campos del DPH que GENSYS rellena y nosotros no
+
+Arreglado lo de los bancos, la traza llego mucho mas lejos: `sd_login`
+abre `A.IMG` y devuelve handle 0, la BDOS empieza a leer el directorio...
+y se vuelve a colgar. Pero ya con un rastro legible:
+
+```
+selectdisk  $9833  4A  LD C,D        BC=0076
+...
+seldsk      $6058  79  LD A,C        AF=7644
+            $6060  017783  LD BC,@dtbl
+            $6063  09      ADD HL,BC     HL=8463
+            $6082  CD00B8  CALL ipchl
+            $CD0D  00      NOP
+            $CD0E  00      NOP           (...)
+```
+
+SELDSK llamado con la unidad **$76**. Y `$76` es nuestro relleno de HALT
+de la pagina cero. Unas lineas antes estaba la confirmacion:
+
+```
+            $B4BC  2AF0B2  LD HL,(curbcba)   HL=7676
+```
+
+La BDOS estaba recorriendo la lista de *buffer control blocks* **desde la
+direccion 0**. Los tres ultimos campos de cada DPH estaban a cero:
+
+```
+            defw dpb_sd, csv_a, alv_a, 0,0,0
+```
+
+En CP/M 3, un 0 ahi no significa "no lo uses". Significa "usalo, esta en
+la direccion 0". Es trabajo de GENSYS, igual que `?ERJMP` y la direccion
+del SCB, y por el mismo motivo no estaba hecho.
+
+| Campo | Estaba | Debe ser | Por que |
+|---|---|---|---|
+| DIRBCB | 0 | `dirbcbh` | La BDOS lee todo el directorio por aqui. Hace falta de verdad |
+| DTABCB | 0 | `$FFFF` | `PSH=PSM=0`: el sector fisico ya son los 128 B del registro logico, no hay deblocking |
+| HASH | 0 | `$FFFF` | Sin hash de directorio |
+
+### La trampa de HASH
+
+`$FFFF` y no `0`, y esta es la menos evidente de las tres. `test$hash`
+(BDOS.ASM 9010) es:
+
+```
+test$hash:  lhld hash$tbla
+            mov  a,l
+            ora  h
+            inr  a
+            ret
+```
+
+Da `Z` ("no hay tabla") **solo** con `$FFFF`. Con `0` da `NZ`, o sea "si
+hay tabla, en la direccion 0" -- y efectivamente en la traza se veia
+`init$hash` ejecutandose de verdad y escribiendo alli con `move$out`.
+El comentario de DRI en el llamante lo dice sin ambiguedad: *"is hashtbla
+~= 0ffffh"*.
+
+### La indireccion que solo existe en banked
+
+DIRBCB **no** apunta al primer BCB: apunta a una **palabra** que contiene
+la direccion del primer BCB. En BDOS.ASM se ve siempre bajo `[if BANKED]`:
+
+```
+            lhld dirbcba
+            mov  e,m
+            inx  h
+            mov  d,m
+            xchg
+```
+
+Un nivel de puntero mas que en el CP/M 3 no bancado. `DTABCB = $FFFF` se
+comprueba **antes** de esa indireccion (`mov a,l / ana h / inr a / rz`),
+asi que ahi el valor directo sigue valiendo.
+
+`HASH` no lleva indireccion: es la direccion de la tabla y el byte
+siguiente (HBANK) su banco.
+
+### Formato del BCB
+
+BDOS.ASM 8155, 15 bytes en sistemas bancados:
+
+| Off | Campo | Inicial |
+|---|---|---|
+| 0 | DRV | `$FF` (libre) |
+| 1-3 | REC | 0 |
+| 4 | PEND | 0 |
+| 5 | SEQ | 0 |
+| 6-7 | TRACK | 0 |
+| 8-9 | SECTOR | 0 |
+| 10-11 | BUFFAD | el buffer de 128 B |
+| 12 | BANK | 0 (sistema) |
+| 13-14 | LINK | siguiente BCB, 0 = fin |
+
+`DRV = $FF` es lo que marca el BCB como libre: la BDOS lo comprueba con
+`mov a,m / inr a / jz`.
+
+Se han puesto **dos** BCB compartidos por las cinco unidades -- el campo
+DRV dice de quien es cada uno en cada momento. Con uno solo tambien
+funcionaria; dos dan algo de cache al recorrer el directorio. Los buffers
+viven en el banco de sistema, de ahi `BANK=0`.
+
+**Leccion**: en las estructuras de CP/M 3, "sin usar" casi nunca se
+escribe con un cero. Los centinelas son `$FFFF`, y un cero es una
+direccion perfectamente valida que la BDOS va a usar tal cual.
+
+## "No File" con un disco que la 2.2 si leia: OFF
+
+El formato de disco lo define el DPB, no el driver, asi que un disco de
+la 2.2 tiene que servir tal cual. Y sirve -- pero nuestro DPB no era el
+mismo. Comparado campo a campo con `bios.z80` de `CPM_SD81`:
+
+| Campo | 2.2 | CP/M 3 |
+|---|---|---|
+| SPT | 26 | 26 |
+| BSH/BLM/EXM | 3 / 7 / 0 | 3 / 7 / 0 |
+| DSM | 242 | 242 |
+| DRM | 63 | 63 |
+| AL0/AL1 | `$C0` / 0 | `$C0` / 0 |
+| CKS | 16 | 16 |
+| **OFF** | **2** | **0** |
+
+`OFF` son las pistas de sistema reservadas al principio del medio. Con
+`OFF=0` la BDOS buscaba el directorio en la pista 0 -- las pistas de
+arranque -- no encontraba ninguna entrada valida y `DIR` contestaba "No
+File". Ni error de E/S ni cuelgue: el disco se leia perfectamente, solo
+que por el sitio equivocado.
+
+`dpb_ram` (disco RAM) se queda con `OFF=0`, que es lo correcto: no tiene
+pistas de arranque.
+
+## El color no se veia: falta encender el Chroma
+
+Los atributos estaban bien calculados y bien escritos, pero la salida de
+video seguia siendo monocroma. El registro de modo Chroma (`$7FEF`) valia
+`$0F`, y hacen falta sus dos bits altos:
+
+| Bit | Nombre | Por que |
+|---|---|---|
+| 5 | `color_enable` | Saca RGB en vez de luminancia: `VRED = color_enable? cred&ncsync : video&ncsync` (SD81.v:1600-1603) |
+| 4 | `color_mode` | Toma el atributo de `attr_addr_m1`, o sea de `ATTR_OVR` -- justo lo que programa `?init`. Con 0 leeria `attr_addr_m0`, otra direccion (SD81.v:1151/1165/1535) |
+| 3-0 | color del borde | Se deja el `$F` que ya habia |
+
+O sea `$3F`. Y la decodificacion es de **16 bits** (`Addr==16'h7FEF`,
+SD81.v:427), asi que hay que escribirlo con `out (c),a` y BC entero, no
+con el `out (n),a` que usamos para el paginado -- ese pone A en el byte
+alto de la direccion, no B.
+
+Merece la pena quedarse con la forma del fallo: el atributo llegaba a la
+memoria de video correcto, el hardware lo leia correcto, y aun asi no se
+veia nada. Cuando algo "no tiene efecto" sin dar error, el sospechoso
+suele ser un bit de habilitacion, no el dato.
+
+## Los .COM no arrancaban: no habia cargador
+
+Al teclear el nombre de un programa no pasaba nada. Ni error, ni cuelgue:
+volvia el prompt. Dos problemas encadenados.
+
+### 1. `bdosbase` sin poner
+
+Otro campo de GENSYS que estaba a cero, y la CCP lo usa para dos cosas
+distintas al lanzar un transitorio (`xcom`):
+
+```
+	lhld	realdos-1	;put fcb in the loader's stack
+	dcr	h		;page below LOADER (or bottom RSX)
+	mvi	l,0C0h
+...
+	lhld	realdos-1	;base page of BDOS
+	xra	a
+	mov	l,a
+	sphl			;top of stack below BDOS
+```
+
+Con el campo a cero, `realdos`=0 y `dcr h` da `$FF`: el FCB se copiaba a
+**`$FFC0`**, encima de la tabla de fuentes en el banco comun, y el SP
+quedaba en **`$0000`**, asi que el primer `push` escribia en `$FFFE`.
+Toda la pila del transitorio caia en memoria comun.
+
+Ahora apunta a `LDR_BASE` (`$DF00`): FCB en `$DEC0` y pila bajando desde
+`$DF00`, las dos dentro del TPA del banco de usuario -- la colocacion que
+describe el propio comentario de DRI.
+
+### 2. La funcion 59 no existia
+
+La CCP termina toda ejecucion externa asi:
+
+```
+loader:	mvi	c,loadf		;use load RSX to load file
+	jmp	bdos
+```
+
+`loadf` es la **funcion 59 (P_LOAD)**, y la BDOS **no la implementa**: en
+CP/M 3 la aporta `LOADER.RSX`. Nosotros quitamos `LOADER3.ASM` hace
+tiempo -- ni siquiera esta en `dri_src/` -- asi que 59 caia en
+`bad$func` de RESBDOS.ASM (queda entre `ndf`=51 y 98), que devuelve
+`A=$FF` y poco mas. Y como el `jmp bdos` es un salto de cola, el `ret` de
+la BDOS recogia el `$0100` que `xcom8` habia apilado y saltaba a un TPA
+vacio.
+
+De ahi el sintoma tan silencioso: la CCP hacia su parte entera y
+correctamente, y lo que faltaba era la pieza que ni siquiera es de la
+BDOS.
+
+### La solucion: `loader.z80`
+
+Un stub de 256 bytes en `$DF00` del banco de **usuario**, que es el
+mecanismo de RSX de DRI reducido a su minima expresion:
+
+```
+ldr$entry:  ld   a,c
+            cp   59
+            jp   nz, call5_entry     ; el resto de funciones, tal cual
+```
+
+`$0005` salta aqui (via `@MXTPA`, que `set$jumps` copia a `$0006`), o sea
+que el stub es el primer eslabon de la cadena BDOS: atiende la 59 y pasa
+todo lo demas a `call5_entry`. La 59 abre el FCB que le deja la CCP en
+DE, lee registros de 128 B desde la direccion que viene en FCB+33
+(normalmente `$0100`) y vuelve; el `ret` recoge el `$0100` de la CCP y
+entra en el programa.
+
+Tiene que vivir arriba del TPA por dos razones **distintas**:
+
+1. Un `call 5` desde un programa llega con el banco de usuario puesto, asi
+   que el destino tiene que existir en ese banco.
+2. El programa se carga en `$0100` y crece: un cargador en el TPA bajo
+   seria machacado por lo que esta cargando.
+
+Y no hay reubicacion que hacer: se ensambla **en su direccion de
+ejecucion**, asi que la imagen plana lo deja en `$DF00` del banco de
+sistema y `ldccp_real` lo copia a `$DF00` del banco de usuario -- misma
+direccion logica, banco distinto. Se recopia en cada arranque en
+caliente, junto con la CCP.
+
+De paso, `@MXTPA` vuelve a significar lo que dice su nombre. En un CP/M+
+real, "techo del TPA" y "entrada de la cadena BDOS" son la misma
+direccion; aqui habian divergido porque `call5_entry` vive en el banco 7.
+Ahora las dos son `LDR_BASE`.
+
+Coste: 256 bytes de TPA (de 56K a 55.75K).
+
+## `?stbnk` destruia su propio argumento
+
+Con el cargador ya puesto, la traza decia que todo iba bien: el `open`
+funcionaba, el bucle leia muchos sectores, `ldr$dma` avanzaba desde
+`$0100` y se llegaba limpiamente a `ldr$done`. Y aun asi, al `ret`
+volvia el prompt sin haber ejecutado nada.
+
+El culpable estaba en la tabla de saltos del BIOS:
+
+```
+?stbnk:     xor  a
+            call bnksel
+            jmp  setbnk
+```
+
+SETBNK (funcion 28 del BIOS) recibe en **A** el banco donde esta el DMA.
+Pero el `xor a` que hace falta para pasar a sistema **destruye ese
+argumento**, y como `?bank` preserva AF, lo que llega a `setbnk` (`sta
+@dbnk`, BIOSKRNL.ASM) es el cero, no lo que paso el llamante. `@dbnk`
+valia siempre 0: "el DMA esta en el banco de sistema".
+
+La cadena completa: al cargar un `.COM`, la BDOS hace `mvi a,1 / call
+setbnkf` (BDOS.ASM:5142) para decir que el buffer esta en el banco de
+**usuario**. Llegaba un 0. `xfer$out` veia `@dbnk == @cbnk == 0`, se
+ahorraba el cambio de banco -- correctamente, segun la informacion que
+tenia -- y los 128 bytes de cada sector acababan en `$0100` del banco de
+**sistema**. En el de usuario seguia la CCP intacta, asi que el `ret` del
+cargador la reiniciaba: prompt de vuelta y "no ha pasado nada".
+
+### Por que tardo tanto en dar la cara
+
+Porque los buffers de directorio viven en el banco de sistema (`BANK=0`
+en el BCB, `drvtbl.z80`). Para ellos, el 0 equivocado **era el valor
+correcto**, por casualidad. Todo el trabajo de disco que habiamos
+probado hasta ahora -- el `DIR`, el login, la lectura del directorio --
+pasaba por ese camino y funcionaba. El primer uso real de `@dbnk` con
+valor distinto de cero fue justo la carga de un transitorio.
+
+El arreglo es guardar el argumento en un registro que sobreviva:
+
+```
+?stbnk:     ld   b,a
+            xor  a
+            call bnksel
+            ld   a,b
+            jmp  setbnk
+```
+
+`B` vale porque `?bank` hace push/pop de BC.
+
+**Leccion**: las entradas de esa tabla que llevan `xor a` delante solo
+son correctas si la rutina de destino no recibe nada en A. Revisadas
+todas: `?tim`/`?ldccp`/`?rlccp` no reciben argumentos, `?bnksl` pasa A
+tal cual sin tocarlo, `?xmov` usa B y C (que `?bank` preserva) y las diez
+entradas de E/S de caracter usan C. `?stbnk` era la unica que pasaba algo
+en A -- y la unica rota.
+
+## MOUNT: por que no montaba nada (y por que era peor que eso)
+
+`mount.asm` de la 2.2 parchea directamente el array de handles del BIOS:
+
+```
+DISKHANDLE  equ 0E018h          ; VARBASE($E000)+24: handles de A-D
+```
+
+En CP/M 3 eso esta mal por partida doble.
+
+**Primero, la direccion.** Nuestro `disk_handle` estaba en `$811F`, o sea
+en el banco de SISTEMA -- que un programa de usuario no puede ni ver. Y
+`$E018` en nuestro mapa cae dentro de los datos de la BDOS residente, en
+la zona comun: escribir ahi no solo no montaba nada, ademas **corrompia
+el sistema**.
+
+**Segundo, aunque acertara la direccion, tampoco habria servido.** En la
+2.2, `bios.z80` abre los cuatro `.IMG` una sola vez en el arranque en
+frio y no vuelve a tocar `disk_handle` -- por eso el parche se quedaba
+puesto. Nuestro `sd_login` reabria en cada login, y MOUNT termina
+haciendo un reset de unidad (BDOS 37) justo para que la BDOS relea el
+directorio... o sea, provocando el proximo login. El handle recien
+montado duraba lo que tardaba en ejecutarse la siguiente instruccion.
+
+### Los dos cambios
+
+**`disk_handle` se muda al banco comun**, a `$F8FC` (`DISKHANDLE` en
+`memmap.inc`). Va justo detras de `lstack`, en la reserva de la tabla de
+fuentes: `lstack` es el TOPE de una pila que crece hacia abajo, asi que
+en `$F8FC` y siguientes no se escribe nunca. Arranca a `$FF,$FF,$FF,$FF`
+desde la propia imagen, y como la imagen se carga una sola vez, **un
+montaje sobrevive al arranque en caliente**.
+
+**`sd_login` solo abre si el handle vale `$FF`.** Ese es ahora el
+significado de "sin abrir", y es lo que permite que MOUNT deje el suyo y
+nadie se lo pise.
+
+### `mount3.asm`
+
+Copia del original con `DISKHANDLE equ 0F8FCh`. El fuente de la 2.2
+(`CPM_SD81/mount.asm`) se queda intacto. Se ensambla con
+`build_mount3.bat` y produce `MOUNT3.COM`.
+
+El protocolo con el MCU no cambia ni una linea: son `in`/`out`, y esos
+funcionan desde cualquier banco.
+
+**Leccion**: un programa de usuario que parchea estructuras del BIOS es
+una dependencia invisible. En la 2.2 no habia bancos y una direccion era
+una direccion; aqui, "esta en `$E018`" dejo de querer decir nada sin
+decir tambien "en que banco". Cualquier otra utilidad que hicieramos
+para la 2.2 con este patron hay que revisarla igual.
+
+## La tabla de saltos del BIOS no tenia 3 bytes por entrada
+
+Turbo Pascal 3.0 cargaba entero -- 30.848 bytes, `ldr$dma` = `$7980` al
+salir del cargador -- hacia **una sola** llamada a la BDOS (la 25, "cual
+es la unidad actual") y no volvia a llamar nunca mas. Se quedaba dando
+vueltas en `scan_keys` sin haber escrito un caracter en pantalla.
+
+Y `PIP` y `ED` funcionaban perfectamente. Esa era la pista: los dos
+hacen toda su E/S por la BDOS. Turbo Pascal no.
+
+### El problema
+
+Un programa de CP/M 2.2 llama al BIOS sin pasar por la BDOS. Lee la
+palabra de `$0001`, le resta 3 para obtener la base del BIOS, y de ahi
+indexa **de tres en tres**: `CONST=base+6`, `CONIN=base+9`,
+`CONOUT=base+12`...
+
+Nuestra tabla real (`bank.z80`) no cumple eso, porque lleva el cambio de
+banco metido dentro de cada entrada:
+
+| Entrada | Direccion | Tamano |
+|---|---|---|
+| `?boot` | `$7E6C` | 3 |
+| `?wboot` | `$7E6F` | 7 (`xor a / call bnksel / jmp wboot`) |
+| `?const` | `$7E76` | 6 (`ld hl,const / jmp biosw`) |
+| `?conin` | `$7E7C` | 6 |
+| `?cono` | `$7E82` | ... |
+
+Con `$0001` = `?wboot` = `$7E6F`, el programa calcula base = `$7E6C` y
+pide CONOUT en `$7E78`... que cae **a medias de la instruccion `ld
+hl,const`** de `?const`.
+
+### La solucion
+
+Una tabla intermedia, `bios$tbl`, de 33 `jp` de 3 bytes que apuntan a las
+entradas de verdad, y `set$jumps` poniendo `BIOSTBL+3` en `$0001` en vez
+de `?wboot`.
+
+Vive en `$DF80`, la segunda mitad de la pagina del cargador, por los
+mismos dos motivos que el cargador: esta en el banco de usuario (que es
+donde corre quien la llama) y `@MXTPA` la protege de que la machaque el
+propio programa. Los destinos (`$7Exx`) son alcanzables porque la zona
+duplicada existe en los dos bancos.
+
+Las dos cosas que viven en `$0001` conviven sin problema con la
+indireccion: `jmp 0` salta a `BIOSTBL+3`, que es `jp ?wboot`.
+
+Coste: un `jp` de mas por llamada al BIOS. La BDOS no pasa por aqui --
+usa los simbolos `?xxx` directamente.
+
+**Leccion**: meter logica dentro de una tabla de saltos rompe el
+contrato de la tabla. El espaciado ERA parte del interfaz, aunque en
+ningun sitio estuviera escrito, y ningun ensamblado lo iba a detectar.
+Lo unico que lo delataba era un programa que usara el interfaz de
+verdad -- y para eso hacia falta que primero funcionara la carga de
+transitorios.
+
+## La zona duplicada estaba dentro del TPA
+
+Turbo Pascal arranca, imprime su rotulo, pregunta por los mensajes de
+error, contesta que si, empieza a cargar `TURBO.MSG`... y se para. Con
+`N` (sin mensajes) funciona perfectamente.
+
+La traza lo enseno sin ambiguedad:
+
+```
+$035F  LD HL,($0001)      HL=DF83      ; base del BIOS
+$0362  ADD HL,DE          DE=0009 -> HL=DF8C
+$0363  JP (HL)
+$DF8C  JP $7E82                        ; CONOUT, correcto
+$7E82  LD HL,$F60E                     ; ld hl,conout   correcto
+$7E85  JP $7E3F                        ; jmp biosw      correcto
+$7E3F  0D        DEC C                 ; <-- BASURA
+$7E40  0A        LD A,(BC)
+$7E41  34        INC (HL)
+```
+
+Los bytes que se ejecutan en `$7E3F` son `0D 0A 34 31 55 6E 6B 6E 6F 77
+6E 06 0F 20 73`, o sea **`..41Unknown.. s`**: texto de `TURBO.MSG`,
+literal.
+
+La zona duplicada del conmutador vivia en `$7E00-$7FFF`, **en mitad del
+TPA**, y nada la protegia. `dup_switcher` la copia al banco de usuario en
+el arranque, pero `@MXTPA` decia `$DF00`, asi que para cualquier programa
+esos 512 bytes eran memoria libre. `TURBO.COM` ocupa hasta `$797F` y
+carga los mensajes justo encima, pasando por `$7E00`.
+
+Lo mismo explicaba que la pantalla se llenara de basura al editar un
+`.PAS`: el buffer del editor crece hacia arriba y arrasa lo mismo.
+
+### Por que tardo tanto en aparecer
+
+Porque ningun programa habia llegado tan arriba. `PIP`, `ED`, `DIR`,
+`STAT` y compania son todos pequenos. Hizo falta un `.COM` de 30 KB que
+ademas cargara datos encima de si mismo.
+
+### La mudanza
+
+| Zona | Antes | Ahora |
+|---|---|---|
+| Cargador + `bios$tbl` | `$DF00-$DFFF` | `$DD00-$DDFF` |
+| Zona duplicada | `$7E00-$7FFF` | `$DE00-$DFFF` |
+| `@MXTPA` / `bdosbase` | `$DF00` | `$DD00` |
+| TPA | `$0100-$DEFF`, con una mina en `$7E00` | `$0100-$DCFF`, entero |
+
+El cargador queda **debajo** de la zona duplicada, y no al reves. `$0006`
+es a la vez la entrada a la BDOS y el techo del TPA que leen los
+programas, asi que todo lo que haya que proteger tiene que estar por
+encima de `LDR_BASE`. Con el orden invertido, la zona duplicada volveria
+a caer dentro de lo que un programa cree libre.
+
+El TPA pasa de 55,5K a 55K. En la practica se gana: esos 512 bytes ya
+eran inutilizables, solo que en vez de dar un error corrompian el
+sistema.
+
+### El efecto secundario: `WINBLK`
+
+La zona duplicada pasa del bloque 3 al bloque 6, y el 6 era `WINBLK`, la
+ventana temporal de `map1blk` (disco RAM y relleno de HALT de la pagina
+cero). `map1blk` vive DENTRO de la zona duplicada, asi que no puede estar
+en el bloque que esta reprogramando. Tampoco vale el 4, donde esta el
+driver. `WINBLK` pasa al 3, que queda libre justo con esta mudanza.
+
+Conviene tener clara la diferencia, porque son cosas distintas:
+
+- **La zona duplicada RESIDE.** Ocupa direcciones de verdad, siempre.
+- **`WINBLK` no reside**: se reprograma el mapeo, se copian 128 bytes y
+  se deja como estaba, todo dentro de una misma llamada al BIOS y con el
+  banco de sistema puesto. No se pierde un byte de nadie. Su unico
+  requisito es que no se ejecute nada desde ese bloque mientras la
+  ventana esta abierta.
+
+**Leccion**: `@MXTPA` no es documentacion, es una promesa. Todo lo que
+resida por debajo de esa direccion y no sea del programa es una mina, y
+no salta hasta que aparece un programa lo bastante grande. La pregunta
+que habria que haberse hecho al crear la zona duplicada no era "¿donde
+cabe?" sino "¿de quien es esta memoria?".
+
+### Y una consecuencia inmediata: `mc45_ext67`
+
+Nada mas mudar la zona duplicada al bloque 6, el `RAND USR` volvia a
+BASIC sin mas. La causa estaba en el orden de habilitacion de MC45.
+
+`start:` (system.z80) enciende MC45 para poder ejecutar por encima de
+`$8000` -- pero eso solo cubre los bloques **4 y 5** (`$8000-$BFFF`). El
+6 y el 7 necesitan `mc45_ext67` (registro 2062), que se activaba dentro
+de `?init`.
+
+Con `?boot` en `$7E6C` daba igual: el bloque 3 esta por debajo de
+`$8000` y siempre es ejecutable. Con `?boot` en `$DE6C` es imposible: el
+`jp ?boot` necesita que el bloque 6 ya sea ejecutable, y a `?init` solo
+se llega pasando por `?boot`.
+
+`mc45_ext67` pasa por tanto a `start:`, justo detras del MC45 ON. La
+escritura vale ahi porque la ventana MMIO sigue abierta -- la cierra
+`?init` mucho despues, con `ld (2056),a`.
+
+Merece la pena fijarse en la forma del fallo: **ninguna guarda de
+ensamblado podia cogerlo**. El binario era correcto byte a byte; lo que
+cambio fue en que momento esa memoria se puede ejecutar. Lo unico que lo
+delataba era mirar en el `.lst` a donde habia ido a parar `?boot`.
+
+## Dos `org` solapados, otra vez -- y la herramienta que faltaba
+
+Al mudar la zona duplicada, `start:` (system.z80) crecio 5 bytes: los que
+ocupa activar `mc45_ext67` ahi. Eso desplazo todo BIOSKRNL 5 bytes hacia
+abajo, el bucle de inicializacion de unidades de `boot:` acabo en `$605C`
+y se solapo con `seldsk`, que tenia delante un **`org 06058h` literal**.
+
+El sintoma: `jnz d$init$loop` saltaba a `$3279` y de ahi a un `RST 38` y
+un `HALT`.
+
+Lo interesante es lo que costo verlo. El `.lst` decia:
+
+```
+6057  C23560    jnz d$init$loop
+605A  C398F5    jmp boot$1
+```
+
+...y el `.bin` tenia `C2 79 32 06 61 69`, que son los primeros bytes de
+`seldsk`. Listado y binario **no coincidian**, y ni el ensamblador ni las
+guardas `ds <siguiente>-$` podian avisar: esas solo cogen desbordamientos
+hacia adelante, no un `org` clavado a una direccion que se quedo corta.
+
+Se persiguio primero como corrupcion en memoria, con un breakpoint de
+escritura en `$6058`. Las dos escrituras que salieron eran legitimas (el
+cargador metiendo la imagen, y el `LDIR` del relleno de HALT escribiendo
+en la pagina 0 a traves de la ventana -- el breakpoint vigila direcciones
+logicas, no paginas). Lo que lo resolvio fue mirar el `.bin` directamente
+y ver que el byte malo **ya venia en el fichero**.
+
+### El arreglo
+
+El `org 06058h` era una direccion calculada a mano: "lo que le habria
+tocado a este bloque si no hubieramos insertado el `org` del banco 7".
+Pasa a ser el idioma que ya usabamos en `init.z80` y `bank.z80`:
+
+```
+bioskrnl$cseg$save equ $
+	org 0F598h
+	... bloque del banco 7 ...
+	ds 0F704h-$
+	org bioskrnl$cseg$save
+```
+
+Sin numeros magicos, y crezca lo que crezca lo de delante.
+
+### `checkimg.py`
+
+Compara el `.lst` con el `.bin` y avisa de cada byte que no coincide.
+`build_system.bat` lo ejecuta despues de cada ensamblado y falla si hay
+discrepancias.
+
+Es la unica red que cubre este fallo: **la guarda `ds` detecta que un
+bloque se pasa de largo; esto detecta que otro bloque le cae encima.**
+Son dos mitades del mismo problema y solo teniamos una.
+
+## Formato de disco nuevo: 2 MB
+
+El formato heredado del 2.2 (IBM 3740 de 8": 26 sectores, 250 KB, 64
+entradas de directorio) se quedaba corto. Conviene tener claro que **no
+hay disquete**: el disco es un fichero en la SD al que se accede por
+desplazamiento de bytes,
+
+```
+sd_off = (trk*SPT + sect) * 128
+```
+
+...y el MCU hace `fseek` ahi. No hay pistas, ni cabezas, ni sectores
+fisicos. La geometria es enteramente nuestra y se elige por conveniencia,
+no por imitar un formato que no existe.
+
+### Lo que de verdad limita
+
+| Limite | Valor |
+|---|---|
+| `compute_offset` | 24 bits -> 16 MB por unidad |
+| Fichero CP/M 3 | 32 MB |
+| `fread`/`fwrite` del MCU | **512 bytes** (`BUFFSIZE`, GLOBALS.h:37) |
+| Manejadores de fichero | **4** (`h<4`, COMMANDS.cpp) -- justo A-D |
+| Buffers ALV | `(DSM/4)+2` por unidad, en el banco de sistema |
+| Barrido de directorio | Cada operacion lo lee entero, a `fseek`+`fread` por registro |
+
+El ultimo es el que manda y es facil pasarlo por alto: **el tamano del
+directorio se paga en cada operacion de fichero**, no solo al listar. Por
+eso 256 entradas y no 512.
+
+Sobre el limite de 512: el firmware es defensivo en lectura
+(`count<=BUFFSIZE`, si no devuelve ceros y `status=0x01`), pero
+`cmd_f_write` **no comprueba nada** y copia `count` bytes -- de 16 bits --
+en un buffer de 512. Si algun dia se hace deblocking de escritura, hay
+que arreglar el firmware primero.
+
+### El formato
+
+| Campo | Antes | Ahora | Por que |
+|---|---|---|---|
+| SPT | 26 | 128 | Potencia de dos: `compute_offset` pasa a desplazamientos |
+| BLS (BSH/BLM) | 1024 (3/7) | 2048 (4/15) | Mitad de entradas de asignacion |
+| DSM | 242 | 1023 | 1024 bloques x 2K = 2 MB |
+| DRM | 63 | 255 | 256 ficheros |
+| AL0/AL1 | C0h/0 | F0h/0 | 4 bloques = 8 KB de directorio |
+| EXM | 0 | 0 | BLS=2048 con DSM>255 |
+| CKS | 16 | 8000h | Medio fijo |
+| OFF | 2 | 0 | No arrancamos desde estas imagenes |
+
+`CKS=8000h` (medio fijo, sin vector de checksum) es defendible porque **la
+unica forma de cambiar una imagen es MOUNT3, que ya hace un reset de
+unidad**. Nadie puede cambiarla a espaldas de CP/M. A cambio se ahorra el
+checksumeo del directorio en cada operacion, que con este driver no es
+poca cosa.
+
+### Herramientas
+
+- `mkblank.py` crea una imagen vacia (2 MB de `$E5`).
+- `diskdefs` tiene las definiciones de cpmtools: `sd81-2m` para el formato
+  nuevo y `sd81-250k` para leer las imagenes antiguas.
+
+### La implementacion
+
+| Fichero | Cambio |
+|---|---|
+| `drvtbl.z80` | `dpb_sd` con los valores nuevos; CSV de las 5 unidades a 0 |
+| `diskio.z80` | `compute_offset` a desplazamientos; fuera CSV/ALV |
+| `memmap.inc` | `ALV_BASE`/`ALV_SD`/`ALV_RAM` |
+| `system.z80` | Reserva de los ALV detras de `ccp_image.z80`, con guardas |
+
+`compute_offset` se simplifica mucho al ser SPT una potencia de dos:
+
+```
+            ld   hl,(@trk)
+            ld   b,7
+co_trk:     add  hl,hl               ; HL = trk*128
+            djnz co_trk
+            ld   de,(@sect)
+            add  hl,de               ; HL = lba
+            ld   d,0
+            ld   b,7
+co_shl:     add  hl,hl               ; DHL = lba*128
+            rl   d
+            djnz co_shl
+```
+
+`lba` cabe en 14 bits (trk y sect van de 0 a 127) y el desplazamiento
+final da 21, que es lo que ocupan 2 MB. Antes SPT valia 26 y hacia falta
+un bucle de multiplicar de 8 vueltas.
+
+Los ALV pasan de 63 a **257 bytes por unidad** y ya no caben en el hueco
+del XIOS, que tiene que acabar antes de `$8A00`. Se reservan detras de la
+imagen de la CCP, con una guarda a cada lado: `ds ALV_BASE-$` falla si la
+CCP crece de mas, y `ds LDR_BASE-$` si los buffers llegaran al cargador.
+Direcciones por constante, nunca literales -- que es justo lo que fallo
+con el `org 06058h`.
+
+## `DIR fichero [FULL]` daba tamanos inventados: el DPB en el banco equivocado
+
+Sintomas: `PIP.COM` (10 KB reales, 5 bloques) salia como **20K**;
+`HELP.HLP` (76 KB, 38 bloques) como **152K**; y "Used/Max Dir Entries"
+como **`44/H942`**.
+
+El disco estaba perfecto -- leyendo `A.IMG` desde el anfitrion,
+`PIP.COM` son 68 registros en 5 bloques y `HELP.HLP` 599 en 38, y las 44
+entradas usadas coinciden con lo que dice `DIR`.
+
+La pista era la `H` de `H942`. Un parametro mal puesto da un numero
+equivocado; **un valor no numerico dice que la estructura entera es
+basura**.
+
+### La causa
+
+La funcion 31 de la BDOS (*get disk parameter address*) devuelve al
+programa la direccion del DPB **tal cual**. Nuestro `dpb_sd` estaba en
+`$8202`, o sea en el banco de SISTEMA. El programa corre en el banco de
+USUARIO, dereferencia `$8202` y lee TPA.
+
+Y el comentario que encabezaba `drvtbl.z80` decia justo lo contrario:
+
+> Zona de datos pura (ningun XDPH/DPB se ejecuta como codigo), asi que no
+> hay problema de MC45 ni de duplicacion -- puede vivir en banco comun o
+> en sistema indistintamente.
+
+Falso. Que no se ejecute no significa que no se lea desde el otro banco.
+El razonamiento cubria la CPU y se olvidaba de los programas.
+
+### El arreglo
+
+Los dos DPB (17 bytes cada uno) se mudan a `$F775`, en el hueco que
+rellenaba la guarda del bloque de banco 7 de `init.z80` -- 47 bytes que
+estaban de puro relleno. Cero coste de TPA.
+
+Son datos de **solo lectura**, asi que basta con que existan en una
+direccion visible desde los dos bancos; no hace falta ni duplicacion ni
+sincronizacion.
+
+`init.z80` cierra ahora su guarda en `DPB_SD` en vez de en `$F7A4`, y
+`drvtbl.z80` abre un parentesis con `org DPB_SD` y lo cierra con
+`ds 0F7A4h-$` / `org drvtbl$save`.
+
+### Lo que queda por mirar
+
+La funcion 27 (*get allocation vector address*) tiene el mismo problema:
+devuelve `ALV_BASE`, que esta en el banco de sistema. No se ha tocado
+porque las utilidades de CP/M 3 piden el espacio libre con la funcion 46,
+que devuelve el dato en el DMA y funciona. Pero un programa de CP/M 2.2
+que use la 27 leera basura.
+
+**Leccion**: en un sistema bancado, cualquier BDOS que devuelva un
+PUNTERO obliga a preguntarse desde que banco lo va a leer quien lo
+recibe. La lista es corta -- 27 y 31 -- y ahora esta revisada.
+
+## Disco RAM (unidad E): el directorio
+
+El driver (`ram_read`/`ram_write`/`rdx$setup`) llevaba escrito desde el
+principio, sin probar. Lo que le faltaba no era memoria comun -- no gasta
+ni un byte de banco 7 -- sino que el directorio existiera.
+
+| Pieza | Donde |
+|---|---|
+| `ram_read`/`ram_write`/`rdx$setup` y sus variables | `diskio.z80`, banco de sistema |
+| `map1blk`, `xfer$out`/`xfer$in` | zona duplicada |
+| `dpb_ram` | comun, 17 B |
+| `alv_e` | 14 B en `ALV_BASE`, banco de sistema |
+
+Geometria: BLS=8192, o sea **un bloque = una pagina de 8 KB = una pista**
+de 64 registros. DSM=48 son 49 bloques, las paginas 15-63 (`RAMDISK_BASE`
+en adelante), 392 KB. El directorio es el bloque 0 = la pagina 15 entera:
+256 entradas de 32 B = 8192 B justos, de ahi `AL0=80h`.
+
+### Formatear sin borrar
+
+`ram_init` se llama una sola vez por arranque en **frio**, desde el bucle
+de unidades de `boot:`. El arranque en caliente no pasa por ahi (`wboot`
+va directo a `boot$1`), asi que el contenido sobrevive a un Ctrl-C o al
+final de un programa.
+
+Pero ademas sobrevive a **recargar CP/M entero**: las paginas 15-63 no
+las toca nadie al cargar el sistema, que va a las 3-7. Formatear a ciegas
+en cada arranque borraria el disco RAM cada vez que se reinicia -- en un
+ZX81, a menudo.
+
+La deteccion no usa firmas ni metadatos: **se comprueba si el directorio
+es un directorio**. El primer byte de cada entrada solo puede valer `$E5`
+(libre), `$00-$0F` (numero de usuario), `$20` (etiqueta) o `$21` (sello
+de tiempo). Cualquier otro valor en cualquiera de las 256 entradas
+significa basura, y entonces se formatea.
+
+Con RAM aleatoria cada byte tiene un ~7% de parecer valido, asi que los
+256 a la vez son practicamente imposibles. Y no hay estado que mantener
+sincronizado, que es lo que suele romperse en los esquemas con firma.

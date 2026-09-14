@@ -133,23 +133,28 @@ HEADER = """\
 ;  desde $6000, asi que el cargador deja la fuente ya puesta y no hace
 ;  falta copiarla en ?init.
 ;
-;  OJO -- la tabla EMPIEZA en el codigo 23 ($F8B8), no en el 0. Los
-;  glifos de los codigos 0-22 ($F800-$F8B7) no son imprimibles nunca
+;  OJO -- la tabla EMPIEZA en el codigo 32 ($F900), no en el 0. Los
+;  glifos de los codigos 0-31 ($F800-$F8FF) no son imprimibles nunca
 ;  (?co los filtra con "cp 20h / ret c", y la pantalla se borra con el
 ;  32), asi que ese hueco se reutiliza: los codigos 0-15 para @bnkbf, el
-;  buffer de 128 bytes del BIOS bancado (SCB.ASM), y los 16-20 para el
-;  estado de biosw y bank$exit (bank.z80). La
+;  buffer de 128 bytes del BIOS bancado (SCB.ASM), los 16-20 para el
+;  estado de biosw, los 21-22 para bank$exit y el 23 para las variables
+;  de ?xmove/?move (bank.z80) y los 24-31 para lstack, la pila de la
+;  BDOS (init.z80). La
 ;  base de la tabla que ve el hardware sigue siendo $F800: la fija el
 ;  registro I y el modo de 256 caracteres exige alineacion a 2 KB.
 ; =====================================================================
 
-            org  0F8B8h
+            org  0F900h
 
 """
 
-FIRST = 23          # primer codigo con glifo. Los 0-15 los ocupa @bnkbf,
-                    # los 16-20 el estado de biosw y los 21-22 bank$exit
-                    # (ver bank.z80).
+FIRST = 32          # primer codigo con glifo. Los 0-15 los ocupa @bnkbf,
+                    # los 16-20 el estado de biosw, los 21-22 bank$exit,
+                    # el 23 las variables de ?xmove/?move (bank.z80) y los
+                    # 24-31 lstack, la pila de la BDOS (init.z80).
+                    # Ninguno es imprimible: ?co filtra todo lo que esta
+                    # por debajo de $20, que es justo el codigo 32.
 
 
 def main():

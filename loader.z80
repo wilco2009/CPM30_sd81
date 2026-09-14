@@ -1,0 +1,231 @@
+; =====================================================================
+;  loader.z80 - cargador de programas transitorios (.COM).
+;
+;  POR QUE EXISTE. La CCP termina toda ejecucion de un programa externo
+;  con esto (CCP3.ASM, "loader:"):
+;
+;      mvi  c,loadf        ; loadf = 59
+;      jmp  bdos
+;
+;  La funcion 59 (P_LOAD) NO la implementa la BDOS: en CP/M 3 la aporta
+;  LOADER.RSX, un modulo residente que se intercala en la cadena de la
+;  BDOS. Nosotros quitamos LOADER3.ASM hace tiempo (ni siquiera esta en
+;  dri_src/), asi que la 59 caia en "bad$func" de RESBDOS.ASM, que
+;  devuelve A=$FF y ya. Como el "jmp bdos" es un salto de cola, el "ret"
+;  de la BDOS recogia el $0100 que la CCP habia apilado y saltaba al TPA
+;  vacio. Sintoma: al teclear el nombre de un programa no pasaba
+;  absolutamente nada, y tampoco salia ningun error.
+;
+;  QUE HACE. Lo mismo que LOADER.RSX pero solo para .COM absolutos:
+;  se pone al principio de la cadena BDOS ($0005 salta aqui), atiende la
+;  funcion 59 y pasa TODO lo demas a call5_entry, que es la entrada de
+;  verdad. Es el mecanismo de RSX de DRI reducido a su minima expresion.
+;
+;  DONDE VIVE. En $DD00-$DDFF del banco de
+;  USUARIO, justo debajo de la zona duplicada del conmutador
+;  ($DE00-$DFFF). Tiene que estar ahi y no en memoria de sistema por dos
+;  razones distintas:
+;
+;    1. Un "call 5" desde un programa de usuario llega con el banco de
+;       usuario puesto (ver la nota de call5_entry en init.z80), asi que
+;       el destino tiene que existir en ese banco.
+;    2. El programa se carga en $0100 y va creciendo: cualquier cargador
+;       que viviera en el propio TPA bajo seria machacado por lo que
+;       esta cargando. Por eso DRI pone el suyo arriba del todo.
+;
+;  Y esto hace que @MXTPA vuelva a significar lo que dice su nombre. En
+;  un CP/M+ real, "techo del TPA" y "entrada de la cadena BDOS" son la
+;  misma direccion; en nuestro port habian divergido porque la entrada
+;  (call5_entry) esta en el banco 7. Ahora las dos son LDR_BASE.
+;
+;  Y de ahi sale el ORDEN: el cargador DEBAJO y la zona duplicada ENCIMA.
+;  Como $0006 es a la vez la entrada a la BDOS y el techo del TPA que
+;  leen los programas, todo lo que haya que proteger tiene que quedar por
+;  encima de LDR_BASE. Al reves, la zona duplicada volveria a caer dentro
+;  de lo que un programa cree libre, que es el fallo que destrozaba Turbo
+;  Pascal.
+;
+;  COMO LLEGA AQUI. Se ensambla EN SU DIRECCION DE EJECUCION, o sea que
+;  la imagen plana (que se carga desde $6000) lo deja en $DD00 del banco
+;  de SISTEMA. ldccp_real (init.z80) lo copia de ahi a $DD00 del banco de
+;  USUARIO, igual que hace con la CCP -- misma direccion logica, banco
+;  distinto, asi que no hay ninguna reubicacion que hacer. Se recopia en
+;  cada arranque en caliente, junto con la CCP, de modo que un programa
+;  que se pasara de la raya no lo deja roto para siempre.
+;
+;  EL FCB. La CCP ya ha abierto el fichero antes de llegar aqui (si no
+;  existiera, habria salido por "exec3", su ruta de error), lo ha
+;  copiado a $DCC0 -- una pagina por debajo de LDR_BASE, ver "bdosbase"
+;  en memmap.inc -- y nos pasa esa direccion en DE. Ademas deja la
+;  direccion de carga en FCB+33 (el campo de registro aleatorio, que
+;  para la funcion 59 significa eso); normalmente $0100.
+;
+;  Aun asi volvemos a abrir el fichero y ponemos CR=0 nosotros: es
+;  barato y no depende de en que estado exacto haya dejado la CCP los
+;  campos de posicion del FCB que copio.
+; =====================================================================
+
+; LDR_BASE/LDR_LEN salen de memmap.inc, que ya incluye bank.z80 mucho
+; antes que este fichero (todo se ensambla como una sola unidad).
+
+            org  LDR_BASE
+
+ldr$entry:  ld   a,c
+            cp   59
+            jp   nz, call5_entry     ; el resto de funciones, tal cual
+
+; --- funcion 59 (P_LOAD): DE = FCB ---
+            ld   (ldr$fcb), de
+
+            ld   hl, 33              ; FCB+33 = direccion de carga
+            add  hl, de
+            ld   e, (hl)
+            inc  hl
+            ld   d, (hl)
+            ld   (ldr$dma), de
+
+            ld   de, (ldr$fcb)
+            ld   c, 15               ; F_OPEN
+            call ldr$bdos
+            inc  a                   ; $FF -> 0
+            jr   z, ldr$err
+
+            ld   hl, (ldr$fcb)
+            ld   de, 32              ; FCB+32 = CR
+            add  hl, de
+            ld   (hl), 0
+
+ldr$loop:   ld   de, (ldr$dma)
+            ld   c, 26               ; F_DMAOFF
+            call ldr$bdos
+            ld   de, (ldr$fcb)
+            ld   c, 20               ; F_READ (secuencial)
+            call ldr$bdos
+            or   a
+            jr   nz, ldr$done        ; <>0: fin de fichero (o error)
+            ld   hl, (ldr$dma)
+            ld   de, 128
+            add  hl, de
+            ld   (ldr$dma), hl
+            jr   ldr$loop
+
+; Cargado. La CCP dejo $0100 en lo alto de la pila antes del "jmp bdos",
+; asi que el "ret" de aqui abajo entra en el programa.
+ldr$done:   call ldr$dma80
+            ld   hl, 0100h
+            ld   a, l
+            ret
+
+; No se pudo abrir. Hay que descartar el $0100 que apilo la CCP: debajo
+; dejo un $0000, asi que el "ret" se va al arranque en caliente y vuelve
+; el prompt en vez de saltar a un TPA vacio.
+ldr$err:    call ldr$dma80
+            pop  hl
+            ld   hl, 0
+            ld   a, l
+            ret
+
+ldr$dma80:  ld   de, 0080h           ; DMA por defecto otra vez
+            ld   c, 26
+; cae en ldr$bdos
+
+; Entrada a la BDOS de verdad. "call ldr$bdos" apila el retorno y salta;
+; el "ret" de la BDOS vuelve aqui. Se va directo a call5_entry en vez de
+; hacer "call 5" para no volver a entrar por ldr$entry.
+ldr$bdos:   jp   call5_entry
+
+ldr$fcb:    defw 0
+ldr$dma:    defw 0
+
+
+; =====================================================================
+;  bios$tbl - la tabla de saltos del BIOS que ven los PROGRAMAS.
+;
+;  Un programa de CP/M 2.2 llama al BIOS sin pasar por la BDOS: lee la
+;  palabra de $0001 (el vector de arranque en caliente), le resta 3 para
+;  obtener la base del BIOS y de ahi indexa de TRES EN TRES --
+;  CONST=base+6, CONIN=base+9, CONOUT=base+12, y asi. Es una convencion
+;  tan vieja como el sistema y sigue siendo obligatoria.
+;
+;  Y nuestra tabla real (bank.z80) NO la cumple, porque lleva el cambio
+;  de banco metido dentro de cada entrada:
+;
+;      ?boot   $7E6C      3 bytes
+;      ?wboot  $7E6F      7 bytes   "xor a / call bnksel / jmp wboot"
+;      ?const  $7E76      6 bytes   "ld hl,const / jmp biosw"
+;      ?conin  $7E7C      6 bytes
+;      ?cono   $7E82      ...
+;
+;  Con $0001 = ?wboot = $7E6F, un programa calcula base = $7E6C y pide
+;  CONOUT en $7E78... que cae A MEDIAS de la instruccion "ld hl,const"
+;  de ?const. A partir de ahi, cualquier cosa.
+;
+;  Sintoma: Turbo Pascal 3.0 cargaba entero (30.848 bytes), hacia UNA
+;  sola llamada a la BDOS -- la 25, "cual es la unidad actual" -- y no
+;  volvia a llamar nunca mas. Se quedaba dando vueltas en scan_keys sin
+;  haber escrito un solo caracter en pantalla. Programas como PIP o ED,
+;  que hacen toda su E/S por la BDOS, funcionaban perfectamente: por eso
+;  el fallo parecia cosa de Turbo Pascal y no lo era.
+;
+;  La solucion es esta tabla intermedia: 33 "jp" de 3 bytes que apuntan
+;  a las entradas de verdad. set$jumps pone BIOSTBL+3 en $0001, asi que
+;  la aritmetica del programa cuadra. Vive aqui, en la pagina del
+;  cargador, por los mismos dos motivos que el cargador: esta en el
+;  banco de usuario (que es donde corre quien la llama) y @MXTPA la
+;  protege de que la machaque el propio programa. Los destinos ($7Exx)
+;  son alcanzables porque la zona duplicada existe en ambos bancos.
+;
+;  El coste es un "jp" de mas por llamada al BIOS. La BDOS no pasa por
+;  aqui: usa los simbolos ?xxx directamente.
+;
+;  Ojo con el ORDEN: es el de CP/M 3, que hasta la entrada 16 (SECTRAN)
+;  coincide exactamente con el de CP/M 2.2 -- que es todo lo que
+;  necesita un programa de aquella epoca.
+; =====================================================================
+
+            ds   BIOSTBL-$       ; guarda: el stub de arriba no puede
+                                  ; llegar hasta aqui
+
+; El "$" no se colapsa en zmac (a diferencia de MAC/RMAC), asi que
+; bios$tbl y BIOSTBL son simbolos distintos. Sin el, chocan: zmac no
+; distingue mayusculas de minusculas.
+bios$tbl:   jp   ?boot           ;  0  BOOT
+            jp   ?wboot          ;  1  WBOOT   <- $0001 apunta AQUI
+            jp   ?const          ;  2  CONST
+            jp   ?conin          ;  3  CONIN
+            jp   ?cono           ;  4  CONOUT
+            jp   ?list           ;  5  LIST
+            jp   ?auxo           ;  6  AUXOUT
+            jp   ?auxi           ;  7  AUXIN
+            jp   ?home           ;  8  HOME
+            jp   ?sldsk          ;  9  SELDSK
+            jp   ?sttrk          ; 10  SETTRK
+            jp   ?stsec          ; 11  SETSEC
+            jp   ?stdma          ; 12  SETDMA
+            jp   ?read           ; 13  READ
+            jp   ?write          ; 14  WRITE
+            jp   ?lists          ; 15  LISTST
+            jp   ?sctrn          ; 16  SECTRAN
+;           --- de aqui en adelante, solo CP/M 3 ---
+            jp   ?conos          ; 17  CONOST
+            jp   ?auxis          ; 18  AUXIST
+            jp   ?auxos          ; 19  AUXOST
+            jp   ?dvtbl          ; 20  DEVTBL
+            jp   ?devin          ; 21  DEVINI
+            jp   ?drtbl          ; 22  DRVTBL
+            jp   ?mltio          ; 23  MULTIO
+            jp   ?flush          ; 24  FLUSH
+            jp   ?mov            ; 25  MOVE
+            jp   ?tim            ; 26  TIME
+            jp   ?bnksl          ; 27  SELMEM
+            jp   ?stbnk          ; 28  SETBNK
+            jp   ?xmov           ; 29  XMOVE
+            jp   bios$nop        ; 30  USERF
+            jp   bios$nop        ; 31  RESERV1
+            jp   bios$nop        ; 32  RESERV2
+
+bios$nop:   ret
+
+            ds   LDR_BASE+LDR_LEN-$  ; hasta $E000. Guarda de tamano: el
+                                      ; stub tiene que caber en LDR_LEN,
+                                      ; que es lo que copia ldccp_real.

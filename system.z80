@@ -35,6 +35,24 @@
 ; -----------------------------------------------------------------------
 start:      ld   a,013h          ; comando MCU: MC45 ON (48K mode)
             call boot_mcu_send
+
+            ; mc45_ext67: MC45 por defecto solo cubre los bloques 4 y 5
+            ; ($8000-$BFFF). El 6 y el 7 hay que habilitarlos aparte, y
+            ; TIENE QUE SER AQUI, no en ?init como estaba antes: desde que
+            ; la zona duplicada se mudo a $DE00, "?boot" vive en el bloque
+            ; 6 -- o sea que el "jp" de abajo ya necesita que sea
+            ; ejecutable. Hacerlo en ?init era imposible: a ?init solo se
+            ; llega pasando por ?boot.
+            ;
+            ; Sintoma cuando faltaba: el RAND USR volvia a BASIC sin mas.
+            ; La CPU leia basura en $DE6C en vez de ?boot.
+            ;
+            ; Es escritura a registro MMIO, y la ventana MMIO sigue
+            ; abierta en este punto -- la cierra ?init mucho despues, con
+            ; "ld (2056),a".
+            ld   a,170
+            ld   (2062),a
+
             jp   ?boot           ; BASIC "RAND USR 24576" entra aqui
 
 boot_mcu_send:
@@ -50,6 +68,12 @@ bms_wait:   in   a,(0AFh)
             xor  c
             jp   m, bms_wait
             ret
+
+; Constantes del mapa de memoria. Va AQUI ARRIBA, y no solo donde lo
+; incluyen bank.z80/diskio.z80, porque BIOSKRNL.ASM ya necesita BIOSTBL
+; (set$jumps) y se ensambla antes que ninguno de los dos. Son solo
+; "equ": no emite un byte.
+            include "memmap.inc"
 
             .8080                ; BIOSKRNL.ASM/SCB.ASM son fuente DRI (8080)
             include "BIOSKRNL.ASM"
@@ -92,6 +116,29 @@ xdmaad		equ	xdmaadd
 srch$hash	equ	rb$search$hash
 
             include "ccp_image.z80"
+
+; ---------------------------------------------------------------------
+;  Vectores de asignacion (ALV) -- ver la nota en memmap.inc.
+;  Guardas a los dos lados: la de arriba falla si la imagen de la CCP se
+;  pasara de ALV_BASE, la de abajo si los buffers llegaran al cargador.
+;  Dos "org" que se pisan no dan error en zmac, asi que esto es lo unico
+;  que lo detecta -- ademas de checkimg.py despues del ensamblado.
+; ---------------------------------------------------------------------
+            ds   ALV_BASE-$
+            ds   4*ALV_SD + ALV_RAM
+            ds   LDR_BASE-$
+
+; Cargador de transitorios. Va DESPUES de init.z80 porque salta a
+; call5_entry, y despues de ccp_image.z80 porque se ensambla en $DF00,
+; por encima de la imagen de la CCP ($BD00-$C700).
+;
+; OJO con el ".z80": aqui seguia activo el ".8080" de BDOS.ASM/RESBDOS
+; (linea 84). ccp_image.z80 no se entera porque solo tiene "db", pero
+; loader.z80 es Z80 puro y en modo 8080 no ensambla ni una linea -- el
+; sintoma fue un system.bin de 0 bytes.
+            .z80
+            include "loader.z80"
+            .8080
 
 ; Tabla de fuentes de 256 caracteres, ensamblada directamente en $F800
 ; (banco 7). Va la ultima porque es lo mas alto del mapa; el .cim es

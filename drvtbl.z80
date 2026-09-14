@@ -12,25 +12,53 @@
 ;            public @dtbl
 ;            extrn  sd_write,sd_read,sd_login,sd_init
 ;            extrn  ram_write,ram_read,ram_login,ram_init
-;            extrn  csv_a,csv_b,csv_c,csv_d
-;            extrn  alv_a,alv_b,alv_c,alv_d,alv_e
+; CSV: ya no hay. El medio se declara fijo (CKS=8000h) -- ver dpb_sd.
+; ALV: detras de la imagen de la CCP (ALV_BASE, memmap.inc).
 
-; ---------------------------------------------------------------------
-;  DPB -- unidades SD (A-D): mismo core que el 2.2 (bios.z80), mas los
-;  tres campos que anade CP/M 3 (OFF/PSH/PSM).
-; ---------------------------------------------------------------------
-dpb_sd:     defw 26         ; SPT
-            defb 3          ; BSH
-            defb 7          ; BLM
-            defb 0          ; EXM
-            defw 242        ; DSM
-            defw 63         ; DRM
-            defb 0C0h       ; AL0
+; =====================================================================
+;  DPB -- en BANCO COMUN ($F775), no aqui en el banco de sistema.
+;
+;  La funcion 31 de la BDOS devuelve esta direccion al programa, que la
+;  lee desde el banco de USUARIO. Con el DPB en memoria de sistema el
+;  programa leia TPA: "DIR fichero [FULL]" daba tamanos inventados y
+;  "Max Dir Entries" salia "H942". Ver la nota larga en memmap.inc.
+;
+;  Son datos de solo lectura, asi que basta con que existan en una
+;  direccion visible desde los dos bancos.
+;
+;  Se aprovecha el hueco que rellenaba la guarda del bloque de banco 7
+;  de init.z80 ($F775-$F7A3, 47 bytes). Ese "ds" ahora para en DPBORG, y
+;  el de aqui abajo cierra hasta $F7A4, donde empiezan las variables de
+;  ?bank (bank.z80).
+; =====================================================================
+
+drvtbl$save equ $            ; ver el "org" de cierre al final del bloque
+
+            org  DPBORG
+
+dpb_sd:     defw 128        ; SPT -- registros de 128 B por "pista".
+                             ; Potencia de dos a proposito: compute_offset
+                             ; (diskio.z80) pasa de un bucle de multiplicar
+                             ; a dos tandas de desplazamientos.
+            defb 4          ; BSH  (BLS=2048 = 2^(4+7))
+            defb 15         ; BLM
+            defb 0          ; EXM  (BLS=2048 con DSM>255)
+            defw 1023       ; DSM  (1024 bloques de 2K = 2 MB)
+            defw 255        ; DRM  (256 entradas de directorio)
+            defb 0F0h       ; AL0  (4 bloques = 8 KB de directorio)
             defb 0          ; AL1
-            defw 16         ; CKS (medio extraible)
-            defw 0          ; OFF
-            defb 0          ; PSH
-            defb 0          ; PSM
+            defw 8000h      ; CKS  medio FIJO, sin vector de checksum.
+                             ; Se puede porque la unica forma de cambiar
+                             ; una imagen es MOUNT3, que hace un reset de
+                             ; unidad -- nadie la cambia a espaldas de
+                             ; CP/M. A cambio nos ahorramos el checksumeo
+                             ; del directorio en cada operacion, que con
+                             ; este driver no es poca cosa.
+            defw 0          ; OFF  sin pistas de sistema: no arrancamos
+                             ; desde estas imagenes, arrancamos de
+                             ; system.bin. Era 2, heredado del 2.2.
+            defb 0          ; PSH  el sector fisico ya son los 128 B del
+            defb 0          ; PSM  registro logico: sin blocking
 
 ; ---------------------------------------------------------------------
 ;  DPB -- disco RAM (E): geometria propia (1 pista = 1 pagina fisica de
@@ -49,6 +77,83 @@ dpb_ram:    defw 64         ; SPT
             defb 0          ; PSH
             defb 0          ; PSM
 
+            ds   0F7A4h-$        ; guarda: detras, las variables de ?bank
+
+            org  drvtbl$save
+
+
+
+; ---------------------------------------------------------------------
+;  BCB de directorio + cabecera de lista.
+;
+;  Los tres ultimos campos del DPH (DIRBCB, DTABCB, HASH) estaban a 0.
+;  En CP/M 3 eso NO significa "no lo uses" -- significa "usa la
+;  direccion 0", y la BDOS se iba a leer estructuras a la pagina cero.
+;  Los dos sintomas que se veian en la traza:
+;
+;    - "lhld curbcba" devolvia $7676: la BDOS seguia la lista de BCB
+;      desde la direccion 0, donde esta nuestro relleno de HALT ($76).
+;      De ahi salia un numero de unidad $76, seldsk indexaba @dtbl 118
+;      entradas mas alla y "ipchl" saltaba a $CD0D -> NOPs.
+;    - init$hash corria de verdad, escribiendo la tabla hash en la
+;      direccion 0.
+;
+;  Los valores correctos:
+;
+;    DTABCB = $FFFF  no hay blocking/deblocking (PSH=PSM=0: el sector
+;                    fisico ya son los 128 B del registro logico), asi
+;                    que no hace falta buffer de datos. Comprobado en
+;                    BDOS.ASM (test$pending, "Does dta$bcba = 0ffffh").
+;    HASH   = $FFFF  sin hash de directorio. OJO: aqui 0 tampoco vale, y
+;                    ademas es la trampa menos evidente -- "test$hash"
+;                    hace "mov a,l / ora h / inr a", que da Z solo con
+;                    $FFFF. Con 0 da NZ, o sea "si hay tabla hash".
+;    DIRBCB          si hace falta de verdad: la BDOS lee TODO el
+;                    directorio a traves de este buffer.
+;
+;  Y una indireccion mas que es propia de los sistemas bancados: en
+;  banked, DIRBCB no apunta al primer BCB sino a una PALABRA que
+;  contiene su direccion. En BDOS.ASM se ve en "discard" y en el
+;  fill00 de la funcion 152, siempre bajo "[if BANKED]":
+;      lhld dirbcba / mov e,m / inx h / mov d,m / xchg
+;  o sea, un nivel de puntero mas que en el CP/M 3 no bancado.
+;
+;  Formato del BCB (BDOS.ASM 8155, 15 bytes):
+;    drv(1) rec(3) pend(1) seq(1) track(2) sector(2) buffad(2)
+;    bank(1) link(2)
+;  drv = $FF marca el BCB como libre/descartado ("mov a,m / inr a / jz").
+;
+;  Dos BCB compartidos por las cinco unidades -- el campo drv dice de
+;  quien es cada uno en cada momento. Con uno solo tambien funcionaria;
+;  dos dan algo de cache al recorrer el directorio. Los buffers viven en
+;  el banco de sistema, y por eso BANK=0.
+; ---------------------------------------------------------------------
+dirbcbh:    defw dirbcb0        ; cabecera: puntero al primero de la lista
+
+dirbcb0:    defb 0FFh           ; DRV -- libre
+            defs 3,0            ; REC
+            defb 0              ; PEND
+            defb 0              ; SEQ
+            defw 0              ; TRACK
+            defw 0              ; SECTOR
+            defw dirbuf0        ; BUFFAD
+            defb 0              ; BANK = sistema
+            defw dirbcb1        ; LINK
+
+dirbcb1:    defb 0FFh           ; DRV -- libre
+            defs 3,0            ; REC
+            defb 0              ; PEND
+            defb 0              ; SEQ
+            defw 0              ; TRACK
+            defw 0              ; SECTOR
+            defw dirbuf1        ; BUFFAD
+            defb 0              ; BANK = sistema
+            defw 0              ; LINK = fin de lista
+
+dirbuf0:    defs 128            ; un registro fisico = un sector
+dirbuf1:    defs 128
+
+
 ; ---------------------------------------------------------------------
 ;  Tabla de unidades (16 palabras, A-P). F-P no existen (0).
 ; ---------------------------------------------------------------------
@@ -63,7 +168,12 @@ xdph_a:     defw sd_write,sd_read,sd_login,sd_init
 dph_a:      defw 0                          ; XLT (sin tabla de skew)
             defs 9,0                        ; scratch BDOS
             defb 0                          ; MF
-            defw dpb_sd, csv_a, alv_a, 0,0,0
+            defw dpb_sd
+            defw 0                          ; CSV: medio fijo (CKS=8000h)
+            defw ALV_BASE+0*ALV_SD
+            defw dirbcbh        ; DIRBCB (indirecto, ver arriba)
+            defw 0FFFFh         ; DTABCB: sin blocking/deblocking
+            defw 0FFFFh         ; HASH:   sin hash de directorio
             defb 0                          ; HBANK
 
 xdph_b:     defw sd_write,sd_read,sd_login,sd_init
@@ -71,7 +181,12 @@ xdph_b:     defw sd_write,sd_read,sd_login,sd_init
 dph_b:      defw 0
             defs 9,0
             defb 0
-            defw dpb_sd, csv_b, alv_b, 0,0,0
+            defw dpb_sd
+            defw 0                          ; CSV: medio fijo (CKS=8000h)
+            defw ALV_BASE+1*ALV_SD
+            defw dirbcbh        ; DIRBCB (indirecto, ver arriba)
+            defw 0FFFFh         ; DTABCB: sin blocking/deblocking
+            defw 0FFFFh         ; HASH:   sin hash de directorio
             defb 0
 
 xdph_c:     defw sd_write,sd_read,sd_login,sd_init
@@ -79,7 +194,12 @@ xdph_c:     defw sd_write,sd_read,sd_login,sd_init
 dph_c:      defw 0
             defs 9,0
             defb 0
-            defw dpb_sd, csv_c, alv_c, 0,0,0
+            defw dpb_sd
+            defw 0                          ; CSV: medio fijo (CKS=8000h)
+            defw ALV_BASE+2*ALV_SD
+            defw dirbcbh        ; DIRBCB (indirecto, ver arriba)
+            defw 0FFFFh         ; DTABCB: sin blocking/deblocking
+            defw 0FFFFh         ; HASH:   sin hash de directorio
             defb 0
 
 xdph_d:     defw sd_write,sd_read,sd_login,sd_init
@@ -87,7 +207,12 @@ xdph_d:     defw sd_write,sd_read,sd_login,sd_init
 dph_d:      defw 0
             defs 9,0
             defb 0
-            defw dpb_sd, csv_d, alv_d, 0,0,0
+            defw dpb_sd
+            defw 0                          ; CSV: medio fijo (CKS=8000h)
+            defw ALV_BASE+3*ALV_SD
+            defw dirbcbh        ; DIRBCB (indirecto, ver arriba)
+            defw 0FFFFh         ; DTABCB: sin blocking/deblocking
+            defw 0FFFFh         ; HASH:   sin hash de directorio
             defb 0
 
 ; ---------------------------------------------------------------------
@@ -98,5 +223,10 @@ xdph_e:     defw ram_write,ram_read,ram_login,ram_init
 dph_e:      defw 0
             defs 9,0
             defb 0
-            defw dpb_ram, 0, alv_e, 0,0,0
+            defw dpb_ram
+            defw 0                          ; CSV: medio fijo (CKS=8000h)
+            defw ALV_BASE+4*ALV_SD
+            defw dirbcbh        ; DIRBCB (indirecto, ver arriba)
+            defw 0FFFFh         ; DTABCB: sin blocking/deblocking
+            defw 0FFFFh         ; HASH:   sin hash de directorio
             defb 0

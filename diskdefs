@@ -1,0 +1,42 @@
+# diskdefs - definiciones de cpmtools para las imagenes del SD81Booster.
+#
+#   cpmls   -f sd81-2m  MIDISCO.IMG
+#   cpmcp   -f sd81-2m  MIDISCO.IMG  fichero.com  0:
+#   cpmrm   -f sd81-2m  MIDISCO.IMG  0:fichero.com
+#
+# Para migrar una imagen del formato viejo al nuevo:
+#   python mkblank.py NUEVO.IMG
+#   cpmcp -f sd81-250k VIEJO.IMG  '0:*.*'  /tmp/salida/
+#   cpmcp -f sd81-2m   NUEVO.IMG  /tmp/salida/*  0:
+#
+# tracks*sectrk*seclen tiene que dar el tamano exacto del fichero.
+
+# --- Formato nuevo: 2 MB -------------------------------------------
+# No imita ningun disquete. El disco es un fichero en la SD al que se
+# accede por desplazamiento (sd_off = (trk*SPT+sect)*128), asi que la
+# geometria se elige por conveniencia: SPT potencia de dos para que
+# compute_offset sean desplazamientos en vez de un bucle de multiplicar.
+diskdef sd81-2m
+  seclen 128
+  tracks 128
+  sectrk 128
+  blocksize 2048
+  maxdir 256
+  skew 1
+  boottrk 0
+  os 3
+end
+
+# --- Formato viejo: el IBM 3740 de 8" que heredamos del CP/M 2.2 ----
+# 250 KB y 64 entradas de directorio. Solo para leer imagenes antiguas.
+# boottrk 2 son las dos pistas de sistema (OFF=2 en el DPB).
+diskdef sd81-250k
+  seclen 128
+  tracks 77
+  sectrk 26
+  blocksize 1024
+  maxdir 64
+  skew 1
+  boottrk 2
+  os 2.2
+end
