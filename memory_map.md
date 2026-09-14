@@ -3421,3 +3421,87 @@ Se descarto desfasar el reloj 28 anos (1998 y 2026 tienen calendarios
 identicos, comprobado mes a mes) porque eso seria apartarse de lo que
 hace una maquina real para que una utilidad de 1983 quede contenta. Si
 alguna vez molesta, el sitio de arreglarlo es `DATE.COM`.
+
+## Sellos de fecha: INITDIR, la etiqueta, y los .COM con RSX
+
+Con `?time` funcionando, `DIR [FULL]` seguia sin ensenar fechas. Hacian
+falta dos piezas mas, y por el camino aparecio un agujero del cargador.
+
+### Son tres cosas, no una
+
+1. **`?time`** -- leer el reloj. Ya estaba.
+2. **`INITDIR`** -- crea las ranuras fisicas: una entrada SFCB (primer
+   byte `$21`) por cada tres ficheros. Funciono a la primera: 64 SFCB,
+   uno de cada cuatro exactamente.
+3. **La etiqueta de disco** -- una entrada `$20` cuyo byte 12 dice si hay
+   que rellenar esas ranuras. **Sin ella la BDOS ve las ranuras y no
+   escribe nada.**
+
+Los bits del byte de modo, comprobados contra la fuente de la BDOS y no
+contra la documentacion:
+
+| Bit | Mascara | Significado | Donde se ve |
+|---|---|---|---|
+| 0 | `$01` | la etiqueta existe | |
+| 4 | `$10` | sello de creacion | `make3a: mvi c,01010000b` |
+| 5 | `$20` | sello de modificacion | `update$stamp: mvi c,00100000b` |
+| 6 | `$40` | sello de acceso | apertura: `mvi c,01000000b` |
+| 7 | `$80` | contrasenas | |
+
+### Por que no servia `SET`
+
+`SET [CREATE=ON,UPDATE=ON]` volvia al prompt sin decir nada y sin
+escribir la etiqueta. La traza a nivel de BDOS era: cargar, una llamada
+`$31`, una `$62`, cuatro caracteres, y fuera.
+
+Se perdio bastante tiempo analizando ese tramo como si fuera `SET`
+cuando era **la CCP reiniciandose**: todas las direcciones estaban entre
+`$0100` y `$0AFF`, que es justo donde vive la CCP. Hasta el `$62` encaja
+-- es el `reset$alloc` de la CCP (`mvi c,allocf`, con `allocf` = 98).
+
+La causa de verdad estaba en el fichero:
+
+```
+$0100: C9 80 22 C9 ...                  C9 = RET
+$010F: 01 80 23 1E 04 FF 00 "DIRLBL  "
+$0200: 31 A8 21 C3 4D 0A                LD SP,$21A8 / JP $0A4D
+```
+
+**`SET.COM` es un `.COM` con prefijo RSX.** Empieza con un `RET` -- para
+fallar sin estropicio en un CP/M 2.2 -- declara un modulo residente
+llamado `DIRLBL`, y el programa de verdad empieza en `$0200`.
+
+Nuestro `loader.z80` lee el fichero en crudo a `$0100` y salta ahi: se
+come el `C9`, hace `RET` y se va al arranque en caliente. De ahi el
+silencio absoluto.
+
+Son **cinco** las utilidades afectadas, y fallan todas igual:
+
+| Utilidad | RSX |
+|---|---|
+| `SET.COM` | `DIRLBL` |
+| `GET.COM` | `GET` |
+| `PUT.COM` | `PUT` |
+| `SAVE.COM` | `SAVE` |
+| `SUBMIT.COM` | `SUB` |
+
+Las otras 24 del disco son `.COM` planos y por eso funcionan.
+
+### El atajo: `setlabel.py`
+
+Escribe la entrada `$20` directamente en la imagen desde el anfitrion.
+Son 32 bytes y evita las posiciones multiplo de 4 menos 1, reservadas
+para los SFCB.
+
+Con eso, `PIP` de un fichero nuevo y `DIR [FULL]` ya ensena las columnas
+`Prot`, `Update` y `Create` con la fecha y hora del RTC. **El circuito
+queda cerrado de punta a punta**: MCU -> `?time` -> BDOS -> SFCB -> DIR.
+
+El ano sale `<6` por el Y2K de las utilidades, como en `DATE`.
+
+**Leccion**: cuando una direccion que aparece en una traza cae dentro
+del rango de la CCP (`$0100-$0AFF`), lo primero es preguntarse si lo que
+se esta trazando es el transitorio o la CCP. Un transitorio que falla
+nada mas arrancar devuelve el control a la CCP, y a partir de ahi lo que
+se ve es codigo de la CCP en las mismas direcciones donde estaba el
+programa.
