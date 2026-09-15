@@ -284,3 +284,64 @@ propia caceria de SAVE). `GET` sigue pendiente.
 **Leccion**: antes de dar por roto el software de DRI, comprobar como se
 usa de verdad. Dos de los cuatro "fallos" de SAVE y GET eran expectativas
 mias equivocadas, no defectos del puerto.
+
+
+---
+
+# Estado de los cinco .COM con RSX (2026-09-15)
+
+| utilidad | RSX | estado |
+|---|---|---|
+| `SET` | `DIRLBL` | **funciona** (arreglado: `@dbnk` en `setdma`) |
+| `SAVE` | `SAVE` | **funciona**. Nunca estuvo roto: `save` / programa / `save` |
+| `GET` | `GET` | **funciona en modo PROGRAM** (el por defecto). `[SYSTEM]` no |
+| `PUT` | `PUT` | **funciona en modo PROGRAM**. `[SYSTEM]` **corrompe memoria** |
+| `SUBMIT` | `SUB` | **parcial**: ejecuta el primer comando del `.SUB` y se cuelga en el segundo |
+
+## El patron
+
+Todo lo que redirige **al programa siguiente** funciona. Todo lo que
+redirige **al propio CCP** falla:
+
+```
+GET [SYSTEM]   entrada de consola del CCP    -> no redirige, silencioso
+PUT [SYSTEM]   salida de consola del CCP     -> corrompe memoria
+SUBMIT         alimenta comandos al CCP      -> primer comando si, segundo no
+```
+
+Tres utilidades distintas y tres mecanismos distintos, con un solo
+denominador comun: **el RSX tiene que sobrevivir al arranque en caliente
+e interceptar al CCP**. Que SUBMIT ejecute el primer comando y muera en
+el segundo encaja exactamente -- entre uno y otro hay un warm boot.
+
+## Sospechosos, por orden de facilidad de descarte
+
+**1. `rsx$chain`.** Es de esta misma manana y desengancha modulos en cada
+warm boot. Si desengancha uno que seguia activo, el sintoma seria
+justo este. Se descarta en una compilacion: dejarlo como `ret` y repetir
+el SUBMIT.
+
+**2. La pila del CCP.** `bdosbase` (`scb$base-4`) marca donde el CCP pone
+su pila y el FCB del transitorio, y los modulos RSX se apilan justo
+debajo. Si la pila crece mas de lo previsto con un RSX activo, se come
+el modulo -- y "corrompe memoria" es literalmente el sintoma de PUT.
+
+**3. El byte alto de `conmode`** (`scb$pg+0D0h`). Es el selector de modo
+que lee el RSX de GET (`(conmode_hi & 3) - 1`), y el CCP lo pone a cero
+en cada entrada (`scbinit`). Encaja con que SYSTEM no sobreviva... pero
+el CCP de DRI hace exactamente lo mismo, asi que falta una pieza.
+
+## Otro detalle sin explicar
+
+El fichero temporal de GET sale en el directorio como `SYSIN51.$$$`. La
+cadena del binario es `SYSIN   $$$` (5 letras y 3 espacios), asi que los
+caracteres 6 y 7 del nombre llevan basura. No parece critico, pero es un
+FCB mal construido y conviene no perderlo de vista.
+
+## Limitacion del emulador a tener en cuenta
+
+Un breakpoint de EJECUCION en `$D300` (`ldr$entry`) no salta nunca,
+aunque el cargador se ejecute; uno de ESCRITURA en la misma direccion si.
+La hipotesis es que EightyOne ata los breakpoints de ejecucion a la
+pagina FISICA mapeada cuando se definen, y el cargador corre en la de
+usuario. Antes de concluir nada de un BP que no salta, comprobarlo.
