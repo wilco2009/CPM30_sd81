@@ -159,11 +159,17 @@ rsxlen		equ	tpa+12h		;length of the RSX
 ;
 ;	SYSTEM CONTROL BLOCK OFFSETS
 ;
+; CPM3_SD81: memmap.inc son solo equates, no genera un solo byte, asi que
+; se puede incluir aqui sin tocar la imagen. Hace falta por LDR_BASE, que
+; rsx$chain necesita como marca de fin de la cadena de RSX.
+	include	memmap.inc
+;
 pag$off		equ	09ch
 ;
 olog		equ	pag$off-0ch	; removeable media open vector
 rlog		equ	pag$off-0ah	; removeable media login vector
 bdosbase	equ	pag$off-004h	; real BDOS entry point
+mxtpa		equ	pag$off+062h	; top of user TPA (CPM3_SD81: lo usa rsx$chain)
 hashl		equ	pag$off+000h	; system variable
 hash		equ	pag$off+001h	; hash code
 bdos$version	equ	pag$off+005h	; BDOS version number
@@ -2792,12 +2798,96 @@ scbaddr:
 	ds	2		;SCB address (releido cada "start:", ver nota arriba)
 banked:	ds	1		;commonbase alto (idem)
 ;
-; CPM3_SD81: rsx$chain vivia en LOADER3.ASM (removido, ver start:) --
-; arreglaba la cadena de RSX residentes al quitar uno. Sin loader nunca
-; se carga ningun RSX, asi que el unico "cz rsx$chain" que queda fuera
-; de "if multi" (comprobacion de la bandera "solo se cargo un RSX") no
-; puede llegar a ser cierto en la practica -- no-op real por si acaso.
+; CPM3_SD81: rsx$chain vivia en LOADER3.ASM, que se elimino. Estuvo un
+; tiempo como "ret" con esta excusa: "sin loader nunca se carga ningun
+; RSX". Dejo de ser cierto en cuanto el cargador (loader.z80) aprendio a
+; cargarlos, y entonces el no-op paso a ser un fallo de verdad: ningun
+; modulo temporal se desenganchaba nunca. GET, PUT, SUB y DIRLBL se
+; quedaban residentes para siempre (con GET, la consola seguia redirigida
+; al fichero despues de terminar) y el TPA no se recuperaba jamas.
+;
+; La cadena, tal como la monta ldr$rsx (loader.z80):
+;
+;   $0006 -> base+06 del primer modulo (el ultimo cargado, y el mas bajo
+;            en memoria: se apilan hacia abajo)
+;   base+06  jmp start
+;   base+09  jmp next   <- el operando, en base+0Ah, apunta al base+06
+;                          del siguiente eslabon
+;   base+0Eh REMOV: 0 = permanente, <>0 = quitar en el arranque en caliente
+;
+; El ultimo "next" apunta a LDR_BASE, que NO es un modulo (no tiene
+; prefijo): es la entrada del cargador. Esa es la marca de fin.
+;
+; Solo se desenlazan los temporales que estan a la CABEZA. Es deliberado:
+; al apilarse hacia abajo, la cabeza es el modulo mas bajo, y quitarla es
+; lo unico que devuelve TPA. Un temporal enterrado detras de uno
+; permanente se queda -- desenlazarlo no liberaria nada (dejaria un
+; hueco) y compactar exigiria re-relocalizar, para lo que ya no tenemos
+; el mapa de bits del .COM. DRI tiene la misma limitacion.
+;
+; Los tres campos que hay que dejar coherentes son los mismos que escribe
+; ldr$rsx, y sin modulos valen lo que les puso init.z80 (LDR_BASE los
+; tres):
+;   $0006      cabeza de la cadena
+;   @MXTPA     de ahi lo rehace set$jumps en cada entrada a la CCP
+;   bdosbase   donde la CCP pone la pila y el FCB del transitorio
+;
+; Destruye A, DE y HL. BC no se toca, y rsxck ya guarda HL por su cuenta.
 rsx$chain:
+	lhld	0006h		;cabeza de la cadena
+rsxc$scan:
+	lxi	d,LDR_BASE	;fin de la cadena?
+	mov	a,h
+	cmp	d
+	jnz	rsxc$mod
+	mov	a,l
+	cmp	e
+	jz	rsxc$empty	;si: no queda ningun modulo
+rsxc$mod:
+	push	h
+	lxi	d,8		;base+0Eh = (base+06)+8
+	dad	d
+	mov	a,m		;REMOV
+	pop	h
+	ora	a
+	jz	rsxc$keep	;permanente: la cadena empieza aqui
+	lxi	d,4		;base+0Ah = (base+06)+4
+	dad	d
+	mov	e,m		;operando del "jmp next"
+	inx	h
+	mov	d,m
+	xchg			;HL = siguiente eslabon
+	jmp	rsxc$scan
+
+rsxc$empty:
+	lxi	h,LDR_BASE
+	shld	0006h
+	lxi	d,LDR_BASE	;bdosbase tambien, como lo dejo init.z80
+	jmp	rsxc$fix
+
+rsxc$keep:
+	shld	0006h
+	push	h		;HL = base+06 -> @MXTPA
+	lxi	d,-6
+	dad	d
+	xchg			;DE = base del modulo -> bdosbase
+	pop	h
+
+rsxc$fix:
+	; HL = valor para @MXTPA, DE = valor para bdosbase
+	push	d
+	xchg			;DE = valor de @MXTPA
+	lhld	scbaddr
+	mvi	l,mxtpa
+	mov	m,e
+	inx	h
+	mov	m,d
+	pop	d
+	lhld	scbaddr
+	mvi	l,bdosbase
+	mov	m,e
+	inx	h
+	mov	m,d
 	ret
 ;
 option:	ds	1		;'[' in line?

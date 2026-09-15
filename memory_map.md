@@ -3597,3 +3597,67 @@ limpio para aislar a los programas que llaman al BIOS por `$0001`. La
 BDOS entra por las direcciones reales de las rutinas, asi que un BP en
 una entrada de la tabla **solo lo dispara un transitorio**. Aqui,
 `$DCA7` (READ) sirvio para pillar a `DIRLBL` sin ruido de fondo.
+
+## Los RSX temporales no se desenganchaban nunca: `rsx$chain`
+
+Al quitar `LOADER3.ASM` de la CCP, `rsx$chain` se dejo como un `ret` con
+esta excusa: *"sin loader nunca se carga ningun RSX"*. Dejo de ser cierto
+en cuanto el cargador aprendio a cargarlos, y el no-op paso a ser un
+fallo: **ningun modulo temporal (REMOV <> 0) se desenganchaba**. `GET`,
+`PUT`, `SUB` y `DIRLBL` quedaban residentes para siempre y el TPA no se
+recuperaba -- cada `SET` se comia su kilobyte largo y no lo devolvia.
+
+La cadena, tal como la monta `ldr$rsx`:
+
+```
+$0006 -> base+06 del primer modulo (el ultimo cargado, y el mas bajo:
+         se apilan hacia abajo)
+base+06  jmp start
+base+09  jmp next    <- el operando (base+0Ah) apunta al base+06 del
+                       siguiente eslabon
+base+0Eh REMOV
+```
+
+El ultimo `next` apunta a `LDR_BASE`, que **no es un modulo** (no tiene
+prefijo): es la entrada del cargador, y esa es la marca de fin.
+
+`rsx$chain` recorre desde `$0006`, avanza mientras la cabeza sea temporal
+y deja coherentes los tres campos que escribe `ldr$rsx` -- `$0006`,
+`@MXTPA` y `bdosbase` -- con los valores de `init.z80` (`LDR_BASE` los
+tres) si la cadena queda vacia.
+
+Solo desengancha los temporales **de la cabeza**, y es deliberado: al
+apilarse hacia abajo, la cabeza es el modulo mas bajo y quitarla es lo
+unico que devuelve TPA. Uno enterrado detras de un permanente se queda --
+desenlazarlo dejaria un hueco, y compactar exigiria re-relocalizar sin
+tener ya el mapa de bits. DRI tiene la misma limitacion.
+
+### Como se comprueba
+
+`$0006` **es** la medida del TPA. Arranque en frio: `$DA00`. Tras un
+`SET`, baja al modulo. Tras el siguiente comando, debe volver a `$DA00`.
+
+### Dos trampas que costaron una vuelta
+
+**El REMOV no siempre significa "quitame".** `GET` usa ese mismo byte
+como **contador de anidamiento**: `lxi h,010Eh / dcr m`. Con `GET`
+enganchado y a la espera vale 0, o sea "permanente", y `rsx$chain` lo
+respeta. Correcto, pero no sirve para validar nada: la prueba limpia es
+con `SET`/`DIRLBL`, que si lo usa como bandera.
+
+**`ccp_image.z80` llevaba el tamano a mano** en dos equates
+(`ccp$image$len`/`ccp$image$padlen`). Cualquier cambio en la CCP obliga a
+rehacerlos, y olvidarse significa copiar de menos -- la CCP se carga
+truncada. Ahora lo genera `mkccpimg.py` desde `build_ccp.bat`, que ademas
+aborta si la imagen desborda `$C800` (donde empiezan los ALV). Margen
+actual: 256 B.
+
+### Lo que queda
+
+Nadie pone `rsx$only$set` (bit 1 de `ccpflag1`) -- lo hacia el
+`LOADER3.ASM` eliminado -- asi que `rsx$chain` se ejecuta en todos los
+arranques en caliente, incluido el inmediatamente posterior a cargar un
+RSX. Para un `.COM` de cuerpo nulo **y** temporal eso lo quitaria antes de
+poder usarse. De los cinco casos reales el unico de cuerpo nulo es
+`SAVE`, que es permanente, asi que hoy no afecta; si aparece el caso, el
+arreglo es que `ldr$rsx` marque ese bit.
