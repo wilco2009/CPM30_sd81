@@ -122,14 +122,26 @@ srch$hash	equ	rb$search$hash
             include "ccp_image.z80"
 
 ; ---------------------------------------------------------------------
-;  Vectores de asignacion (ALV) -- ver la nota en memmap.inc.
-;  Guardas a los dos lados: la de arriba falla si la imagen de la CCP se
-;  pasara de ALV_BASE, la de abajo si los buffers llegaran al cargador.
-;  Dos "org" que se pisan no dan error en zmac, asi que esto es lo unico
-;  que lo detecta -- ademas de checkimg.py despues del ensamblado.
+;  Vectores de asignacion (ALV), en memoria comun para que la funcion 27
+;  devuelva una direccion que el programa que pregunta pueda leer.
+;  No se emite nada util -- son buffers que rellena la BDOS en marcha --
+;  pero se reservan explicitamente para que nadie se cuele en el hueco.
+;  Ver la nota larga en memmap.inc.
 ; ---------------------------------------------------------------------
-            ds   ALV_BASE-$
+alv$save    equ  $
+            org  ALV_BASE
             ds   4*ALV_SD + ALV_RAM
+            ds   0F598h-$        ; guarda: no puede llegar al BIOS
+            org  alv$save
+
+; ---------------------------------------------------------------------
+;  CPM3_SD81: aqui se reservaban los ALV (ds ALV_BASE-$ / ds 4*ALV_SD +
+;  ALV_RAM). Se han ido al banco 7 -- ver memmap.inc y layout_dri.md --
+;  asi que lo unico que queda es rellenar hasta BKIOEXT. La guarda sigue
+;  sirviendo para lo mismo: falla si la imagen de la CCP creciera hasta
+;  aqui. Dos "org" que se pisan no dan error en zmac, asi que esto es lo
+;  unico que lo detecta, ademas de checkimg.py.
+; ---------------------------------------------------------------------
             ds   BKIOEXT-$       ; para AQUI, no en LDR_BASE: detras esta
                                   ; el bloque de E/S que BIOSKRNL.ASM ya
                                   ; escribio con su propio "org", y este

@@ -3059,10 +3059,24 @@ inmutables como `@dtbl` o los DPB, pero no para algo que se escribe:
 habria dos copias divergiendo. Por eso hubo que liberar banco 7 de
 verdad en vez de aprovechar los 28 bytes libres de `$DDE4`.
 
-### Lo que sigue roto
+### Lo que seguia roto, y ya no
 
-La funcion 27 (*get allocation vector address*) devuelve `ALV_BASE`, que
-esta en el banco de sistema. Son 1 KB y no caben en comun ni de lejos.
+La funcion 27 (*get allocation vector address*) devolvia `ALV_BASE`, que
+estaba en el banco de sistema: una direccion correcta a la que el
+programa que preguntaba no podia llegar. La excusa era que son 1042
+bytes y "no caben en comun ni de lejos" -- cierto mientras el banco 7
+estuvo lleno al 100%.
+
+Dejo de serlo con el realineado DRI (`layout_dri.md`): al subir el BDOS
+residente a `$F931` quedaron 1382 bytes contiguos libres en `$F032`, y
+el ALV se mudo alli. No cuesta TPA -- el banco 7 es memoria comun -- y
+de paso libera 1042 bytes del banco de sistema, que se los queda de
+margen la imagen de la CCP (de 256 bytes a 1280).
+
+A quien afecta: a utilidades de **CP/M 2.2** que recorren el mapa de
+bits a mano, tipo `STAT`. Las de CP/M 3 usan la funcion 46 (*Get Disk
+Free Space*), que devuelve el dato ya calculado -- por eso
+`SHOW [SPACE]` funcionaba con la 27 rota.
 
 ## `ERASE.COM` escribia sobre la pagina cero: `searcha`
 

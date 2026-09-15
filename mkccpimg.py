@@ -12,17 +12,20 @@ de copia de ldccp_real nunca lea mas alla de la tabla.
 """
 import sys
 
-ORG      = 0xBD00
-ALV_BASE = 0xC800          # memmap.inc: lo primero que hay detras
+ORG   = 0xBD00
+# memmap.inc: lo primero que hay detras de la imagen. Era ALV_BASE
+# ($C800) hasta que los ALV se fueron al banco 7; ahora el siguiente
+# obstaculo es BKIOEXT, o sea 1408 bytes de margen en vez de 256.
+LIMIT = 0xCC80
 SRC, DST = 'CCP3.cim', 'ccp_image.z80'
 
 data = open(SRC, 'rb').read()
 n    = len(data)
 pad  = (n + 127) // 128 * 128
 
-if ORG + pad > ALV_BASE:
+if ORG + pad > LIMIT:
     sys.exit('[ERROR] la imagen de la CCP (%d B con relleno) desborda '
-             '$%04X: $%04X + %d = $%04X' % (pad, ALV_BASE, ORG, pad, ORG + pad))
+             '$%04X: $%04X + %d = $%04X' % (pad, LIMIT, ORG, pad, ORG + pad))
 
 body = data + bytes(pad - n)
 rows = ['            db   ' + ','.join('0%02Xh' % b for b in body[i:i+16])
@@ -58,5 +61,5 @@ ccp$image:
 
 open(DST, 'w', newline='\r\n').write(hdr + '\n'.join(rows) + '\n')
 print('[OK] %s: %d B reales, %d con relleno ($%04X-$%04X, margen hasta '
-      '$%04X: %d B)' % (DST, n, pad, ORG, ORG + pad - 1, ALV_BASE,
-                        ALV_BASE - ORG - pad))
+      '$%04X: %d B)' % (DST, n, pad, ORG, ORG + pad - 1, LIMIT,
+                        LIMIT - ORG - pad))

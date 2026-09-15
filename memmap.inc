@@ -111,16 +111,29 @@ SWITCHER_BLK  equ 6           ; bloque que la contiene ($C000-$DFFF)
 ;  DSM=1023, doble bit) y no caben en el hueco del XIOS, que tiene que
 ;  terminar antes de $8A00.
 ;
-;  El espacio se reserva en system.z80 justo detras de ccp_image.z80,
-;  con guardas a los dos lados: una comprueba que la CCP no se pasa de
-;  ALV_BASE y otra que los buffers no llegan al cargador (LDR_BASE).
+;  CPM3_SD81: estaba en $C800, en el banco de SISTEMA, y por eso la
+;  funcion 27 (Get Allocation Vector Address) quedo rota a proposito:
+;  devolvia una direccion correcta a la que el programa que preguntaba no
+;  podia llegar. La excusa era que son 1042 bytes y "no caben en comun ni
+;  de lejos", lo cual era cierto con el banco 7 lleno al 100%.
+;
+;  Dejo de serlo con el realineado DRI: al subir el BDOS residente a
+;  $F931 quedaron 1382 bytes contiguos libres en $F032 (comprobado: ni un
+;  simbolo ni un equ apuntan ahi). El ALV cabe con 340 de sobra, asi que
+;  se muda a comun y la funcion 27 pasa a devolver algo util.
+;
+;  No cuesta TPA: el banco 7 es memoria comun. Y de paso libera 1042
+;  bytes del banco de sistema, donde estaba entre la imagen de la CCP y
+;  BKIOEXT.
+;
+;  El espacio se reserva en system.z80, detras del include de
+;  RESBDOS.ASM, con guarda contra el BIOS ($F598).
 ;
 ;  No hace falta CSV: el DPB declara el medio como fijo (CKS=8000h), asi
 ;  que no hay vector de checksum. Se puede porque la unica forma de
 ;  cambiar una imagen es MOUNT3, que hace un reset de unidad.
 ; ---------------------------------------------------------------------
-ALV_BASE     equ 0C800h   ; detras de la imagen de la CCP ($BD00-$C700),
-                          ; con 256 B de holgura por si la CCP crece
+ALV_BASE     equ 0F032h   ; banco 7, en el hueco que dejo el RESBDOS
 ALV_SD       equ 257      ; (DSM/4)+2 con DSM=1023  -- unidades A-D
 ALV_RAM      equ 14       ; (DSM/4)+2 con DSM=48    -- unidad E
 
