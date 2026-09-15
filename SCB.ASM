@@ -36,7 +36,9 @@
 ; para los mismos campos (p.ej. @COVEC del BIOS en $E024 contra
 ; conout$rflg de la BDOS en $E0C0), y la CCP leia conwidth/conpage/
 ; bdosbase a cero, con lo que su arranque iba a ciegas.
-scb$base equ    0E09CH          ; Base del SCB publico (pagina + 9Ch)
+; CPM3_SD81 (fase 2): era 0E09CH a pelo, y tenia que cuadrar a mano con
+; el scb$pg de BDOS.ASM. Los dos salen ya de SCB_PAGE (memmap.inc).
+scb$base equ    SCB_PAGE+9Ch    ; Base del SCB publico (pagina + 9Ch)
 
 @CIVEC  equ     scb$base+22h    ; Console Input Redirection 
                                 ; Vector (word, r/w)

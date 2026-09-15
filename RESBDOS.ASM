@@ -85,7 +85,21 @@ screenf		equ	0ffffh		; 32. screen function
 ; BIOSKRNL.ASM, que no lo necesitaban.
 ; =====================================================================
 
-	org 0F032h
+; CPM3_SD81 (fase 2): subido de $F032 a $F931 para cumplir el layout de
+; DRI. La direccion no es libre, sale de dos condiciones a la vez:
+;
+;   wbootfx (offset $537 desde rb$serial) tiene que caer en scb$pg+68h,
+;   que es donde SAVE.COM busca un $C3 para parchearlo
+;   el final (offset $55F) tiene que caer en scb$pg+90h, donde empieza
+;   olog y por tanto el SCB
+;
+;   $FE00 + $68 - $537 = $F931   y   $FE00 + $90 - $55F = $F931
+;
+; Las dos dan lo mismo, que es la comprobacion de que el layout interno
+; de este modulo sigue siendo el de DRI. La guarda del final del fichero
+; ("ds SCB_PAGE+90h-$") lo verifica en cada ensamblado: si el modulo
+; crece o encoge, falla ahi.
+	org 0F931h
 
 rb$serial:	db	'654321'
 
@@ -1022,6 +1036,11 @@ listfx:		jmp	listf
 ; negativo y el ensamblado falla. Rellena el hueco con ceros, que no
 ; cuesta nada: el .cim es plano y esas direcciones ya estaban dentro.
 
-	ds 0F598h-$
+; CPM3_SD81 (fase 2): era "ds 0F598h-$", que rellenaba hasta el BIOS.
+; Ahora este modulo vive por ENCIMA del BIOS y lo que hay detras es el
+; SCB, asi que la guarda verifica el contrato de DRI: el BDOS residente
+; termina exactamente donde empieza olog (scb$pg+90h). Si da negativo,
+; el modulo se ha comido el SCB.
+	ds SCB_PAGE+90h-$
 
 

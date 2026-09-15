@@ -400,11 +400,23 @@ ldr$nbit:   defb 0               ; bits que le quedan
 ;
 ;  La solucion es esta tabla intermedia: 33 "jp" de 3 bytes que apuntan
 ;  a las entradas de verdad. set$jumps pone BIOSTBL+3 en $0001, asi que
-;  la aritmetica del programa cuadra. Vive aqui, en la pagina del
-;  cargador, por los mismos dos motivos que el cargador: esta en el
-;  banco de usuario (que es donde corre quien la llama) y @MXTPA la
-;  protege de que la machaque el propio programa. Los destinos ($7Exx)
-;  son alcanzables porque la zona duplicada existe en ambos bancos.
+;  la aritmetica del programa cuadra.
+;
+;  CPM3_SD81 (fase 2 del realineado DRI): vivia aqui mismo, en la pagina
+;  del cargador, o sea en el banco de USUARIO -- y por eso tenia que
+;  existir por duplicado para que la vieran los dos bancos. Ahora esta en
+;  BIOSTBL ($FF00), la ultima pagina de la memoria comun: existe una sola
+;  vez y la ven los dos bancos POR CONSTRUCCION, que es exactamente lo
+;  que la duplicacion simulaba a mano.
+;
+;  Y $FF00 no es una direccion cualquiera: es el "bios$pg" de DRI
+;  (RESBDOS.ASM:38). El propio BDOS residente llama al BIOS por esa
+;  tabla -- conoutf equ bios$pg+12, setdmaf equ bios$pg+36... -- asi que
+;  la zancada de 3 bytes es contrato publico, no un detalle interno.
+;  Ver layout_dri.md.
+;
+;  Los destinos ($D5xx) siguen siendo alcanzables porque la zona
+;  duplicada existe en ambos bancos; desde el banco 7 se ve siempre.
 ;
 ;  El coste es un "jp" de mas por llamada al BIOS. La BDOS no pasa por
 ;  aqui: usa los simbolos ?xxx directamente.
@@ -414,8 +426,13 @@ ldr$nbit:   defb 0               ; bits que le quedan
 ;  necesita un programa de aquella epoca.
 ; =====================================================================
 
-            ds   BIOSTBL-$       ; guarda: el stub de arriba no puede
-                                  ; llegar hasta aqui
+            ds   LDR_BASE+LDR_LEN-$  ; guarda de tamano: el stub tiene que
+                                      ; caber en LDR_LEN, que es lo que
+                                      ; copia ldccp_real.
+
+; --- fin de la pagina del cargador. Lo que sigue va al banco 7 --------
+loader$save equ $                ; parentesis de org (ver memory_map.md)
+            org  BIOSTBL
 
 ; El "$" no se colapsa en zmac (a diferencia de MAC/RMAC), asi que
 ; bios$tbl y BIOSTBL son simbolos distintos. Sin el, chocan: zmac no
@@ -457,6 +474,8 @@ bios$tbl:   jp   ?boot           ;  0  BOOT
 
 bios$nop:   ret
 
-            ds   LDR_BASE+LDR_LEN-$  ; hasta $E000. Guarda de tamano: el
-                                      ; stub tiene que caber en LDR_LEN,
-                                      ; que es lo que copia ldccp_real.
+; Guarda de tamano: 33 "jp" de 3 bytes + el "ret" = 100 ($64) bytes. No
+; se puede escribir "BIOSTBL+100h-$" porque esta es la ULTIMA pagina y
+; $FF00+$100 desborda los 16 bits.
+            ds   BIOSTBL+64h-$
+            org  loader$save     ; cierra el parentesis

@@ -44,15 +44,24 @@ RAMDISK_BASE equ 15   ; primera pagina fisica del pool del disco RAM
 ; banco de usuario. El cargador tiene que seguir siendo LO PRIMERO por
 ; encima del TPA: $0006 es a la vez el techo del TPA y la entrada a la
 ; BDOS, asi que todo lo demas que haya que proteger va ENCIMA de el.
-LDR_BASE     equ 0D200h   ; direccion de ejecucion, en el banco de usuario
-LDR_LEN      equ 768      ; multiplo de 128: ldccp_real copia por bloques
+LDR_BASE     equ 0D300h   ; direccion de ejecucion, en el banco de usuario
+LDR_LEN      equ 512      ; multiplo de 128: ldccp_real copia por bloques
+; CPM3_SD81 (fase 2): 768 -> 512 al irse bios$tbl al banco 7. El stub son
+; 393 bytes; 512 es el siguiente multiplo de 128, y LDR_BASE sube de
+; $D200 a $D300 -- el cargador sigue pegado a la zona duplicada
+; ($D300+512 = $D500) y la TPA recupera 256 bytes.
 
 ; Tabla de saltos del BIOS que ven los programas, en la segunda mitad de
 ; esa misma pagina. 33 entradas de 3 bytes ($DD80-$DDE2). Se expresa
 ; como desplazamiento para que no se mueva si LDR_BASE cambia. $0001 apunta a
 ; su entrada WBOOT (BIOSTBL+3), que es de donde un programa de CP/M 2.2
 ; deduce la base del BIOS. Ver la nota larga en loader.z80.
-BIOSTBL      equ LDR_BASE+280h
+; CPM3_SD81 (fase 2): $FF00, que es literalmente el "bios$pg" de DRI
+; (RESBDOS.ASM:38, base+0FF00h: la ULTIMA pagina de la memoria comun).
+; Estaba dentro de la pagina del cargador, en el banco de USUARIO, y por
+; eso tenia que existir duplicada; aqui existe una sola vez y la ven los
+; dos bancos por construccion. Ver layout_dri.md.
+BIOSTBL      equ 0FF00h
 
 ; ---------------------------------------------------------------------
 ;  disk_handle - handles SD de las unidades A-D (4 bytes). EN BANCO
@@ -240,3 +249,25 @@ RTCORG       equ 0CE00h
 BD_RT        equ 0F7A0h   ; direccion de la rutina real (2 B)
 BD_BNK       equ 0F7A2h   ; banco del llamante, para restaurarlo
 BD_A         equ 0F7A3h   ; valor devuelto en A
+
+
+; ---------------------------------------------------------------------
+;  SCB_PAGE - la pagina del SCB. Es "scb$pg" de DRI (RESBDOS.ASM:37,
+;  base+0FE00h) y de ella cuelga todo lo demas:
+;
+;    scb$pg+68h   los thunks parcheables (wbootfx...), donde SAVE.COM
+;                 mete un $21 sobre el $C3 para desviar la E/S de
+;                 consola del BIOS directo al camino bancado
+;    scb$pg+90h   olog: aqui EMPIEZA el SCB, y por tanto aqui tiene que
+;                 TERMINAR el BDOS residente (lo verifica la guarda del
+;                 final de RESBDOS.ASM)
+;    scb$pg+9Ch   el SCB publico (scb$base)
+;    scb$pg+100h  bios$pg = BIOSTBL
+;
+;  Tiene que estar alineada a pagina: SAVE calcula la direccion del
+;  thunk como (scbadd & $FF00) + 68h.
+;
+;  Lo definia BDOS.ASM ($E000) y SCB.ASM repetia la base a pelo ($E09C).
+;  Ahora sale de aqui y los dos la derivan.
+; ---------------------------------------------------------------------
+SCB_PAGE     equ 0FE00h

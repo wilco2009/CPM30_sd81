@@ -207,3 +207,80 @@ sale mas caro que el espacio que ahorra.** Cada "simplificacion" de este
 proyecto estaba bien razonada en su momento y ahorraba algo real; todas,
 sin excepcion, se han cobrado despues una sesion de trazas. Cuando haya
 que elegir entre empaquetar y respetar el estandar, respetar el estandar.
+
+
+---
+
+# Resultado: fases 1 y 2 hechas
+
+## Lo que se hizo
+
+**Fase 1** -- la tabla de fuentes (2 KB) baja del banco 7 al banco de
+usuario, en `$D800`. No cabe en cualquier sitio: el modo de 256
+caracteres exige alineacion a 2 KB, porque `SD81.v:1089` forma la
+direccion como `{ROMTABLE[15:11], caracter, linea}` -- solo los 5 bits
+altos del registro I. La zona duplicada baja a `$D500` y el cargador a
+`$D200` para que todo quede contiguo.
+
+**Fase 2** -- con el banco 7 liberado:
+
+```
+scb$pg    = $FE00     (RESBDOS.ASM:37, literal de DRI)
+bios$pg   = $FF00     (RESBDOS.ASM:38, literal de DRI) = BIOSTBL
+rb$serial = $F931     para que wbootfx caiga en scb$pg+68h
+                      y el modulo termine en scb$pg+90h
+```
+
+El cargador sube a `$D300` y baja a 512 B al irse `bios$tbl`. TPA final:
+52.5K (era 54.25K). Coste real del realineado: **1.75 K de TPA**.
+
+## El contrato de DRI, ya con nombres
+
+`resbdos$pg` resulto ser **decorativo**: una sola ocurrencia en todo el
+fuente, su propia definicion. Lo que de verdad ata son los offsets:
+
+| | |
+|---|---|
+| `scb$pg+68h` | los thunks parcheables (`wbootfx`, `constfx`...) |
+| `scb$pg+90h` | `olog`: aqui empieza el SCB, y aqui debe TERMINAR el BDOS residente |
+| `scb$pg+9Ch` | SCB publico (`scb$base`) |
+| `scb$pg+100h` | `bios$pg`, la tabla de saltos del BIOS |
+| `scb$pg` alineado a pagina | SAVE calcula el thunk como `(scbadd & $FF00) + 68h` |
+
+El codigo del BDOS residente mide lo que quiera: **crece hacia atras**
+desde `scb$pg+90h`. Esa es la clave que faltaba, y la que hacia parecer
+imposible meter 1376 bytes "en una pagina de 256".
+
+La guarda del final de `RESBDOS.ASM` (`ds SCB_PAGE+90h-$`) verifica el
+contrato en cada ensamblado: si el modulo crece o encoge, zmac falla ahi
+en vez de dejarlo pasar en silencio.
+
+## Correccion importante: SAVE no estaba roto
+
+Todo el hilo del parche en `scb$pg+68h` nacio de dar por roto a `SAVE`.
+**No lo estaba.** La secuencia correcta es:
+
+```
+A>save        carga el RSX, no dice nada -- esto es lo normal
+A>date        corre el programa que sea
+A>save        AHORA aparece el dialogo y guarda
+```
+
+En su dia se probo `save` + `date`, no aparecio el cartel, y se dio por
+roto. Faltaba el segundo `save`. Confirmado: funciona **con el sistema
+de la fase 1**, o sea sin realineado ninguno, y escribe el fichero
+correctamente (`TEST.SAV`, `rc=10` = 1280 B = `$6500-$6000` exacto).
+
+El parche del `$C3` es real y forma parte del diseno de SAVE -- desvia
+la E/S de consola del BIOS directo al camino bancado, donde los RSX
+pueden interceptar -- pero **no hace falta para el flujo normal**.
+
+Asi que la justificacion honesta del realineado no es "arregla SAVE",
+sino: alinea el sistema con el estandar y cierra por diseno una clase de
+dependencias de layout que ya habia costado cuatro sesiones (`DEVICE`
+por la funcion 50, Turbo Pascal por `$0001`, `DIRLBL` por `@dbnk`, y la
+propia caceria de SAVE). `GET` sigue pendiente.
+
+**Leccion**: antes de dar por roto el software de DRI, comprobar como se
+usa de verdad. Dos de los cuatro "fallos" de SAVE y GET eran expectativas
+mias equivocadas, no defectos del puerto.

@@ -441,15 +441,15 @@ ica_col:    ld   (hl), a
 ; la ROM del ZX81 en su orden nativo. Con font_image.z80 se escribe el
 ; texto tal cual.
 ;
-; El TPA va de $0100 a LDR_BASE ($D200, donde empieza el cargador de
-; transitorios): $D100 = 53504 bytes = 52.25K justos.
+; El TPA va de $0100 a LDR_BASE ($D300, donde empieza el cargador de
+; transitorios): $D200 = 53760 bytes = 52.5K justos.
 ;
 ; CPM3_SD81: era 54.25K. Bajo al traer la fuente (2 KB) del banco 7 al
 ; banco de usuario -- fase 1 del realineado DRI, ver layout_dri.md. Si se
 ; vuelve a mover LDR_BASE, ACTUALIZAR la cifra del cartel: va escrita a
 ; mano ahi abajo.
 banner_msg: defb 'CP/M Plus v3.0 - SD81Booster for Sinclair ZX81',0Dh,0Ah
-            defb 'Banked memory, 52.25K TPA',0Dh,0Ah
+            defb 'Banked memory, 52.5K TPA',0Dh,0Ah
             defb '(c) 2026 Wilco2009',0Dh,0Ah,000h
 
 ; =======================================================================

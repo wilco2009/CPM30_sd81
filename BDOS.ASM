@@ -75,7 +75,9 @@ base		equ	$
 ; nuestra direccion real (banco 7, $E000 -- la misma base que usa nuestro
 ; SCB.ASM para @CIVEC etc: los rangos de offset no se solapan, $22-$62
 ; ahi, $90-$FE aqui abajo -- las dos mitades de la misma estructura).
-scb$pg		equ	0E000h
+; CPM3_SD81 (fase 2): era 0E000h a pelo. Ahora sale de memmap.inc, que es
+; donde se explica el contrato de offsets que cuelga de esta pagina.
+scb$pg		equ	SCB_PAGE
 
 ; Bios equates -- alias directos a bank.z80 (tabla de saltos real,
 ; duplicada en banco 3 para ser alcanzable desde cualquier contexto).
