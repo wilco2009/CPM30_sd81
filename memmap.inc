@@ -39,7 +39,12 @@ RAMDISK_BASE equ 15   ; primera pagina fisica del pool del disco RAM
 ; leer la cabecera, cargar el cuerpo, y (etapa 2) reubicar y encadenar los
 ; modulos. bios$tbl se queda donde estaba, en $DD80, asi que al stub le
 ; quedan los 640 bytes de $DA00-$DC7F.
-LDR_BASE     equ 0DA00h   ; direccion de ejecucion, en el banco de usuario
+; CPM3_SD81 (fase 1 del realineado DRI, ver layout_dri.md): bajado de
+; $DA00 a $D200 para hacer sitio a la fuente, que se fue del banco 7 al
+; banco de usuario. El cargador tiene que seguir siendo LO PRIMERO por
+; encima del TPA: $0006 es a la vez el techo del TPA y la entrada a la
+; BDOS, asi que todo lo demas que haya que proteger va ENCIMA de el.
+LDR_BASE     equ 0D200h   ; direccion de ejecucion, en el banco de usuario
 LDR_LEN      equ 768      ; multiplo de 128: ldccp_real copia por bloques
 
 ; Tabla de saltos del BIOS que ven los programas, en la segunda mitad de
@@ -77,10 +82,16 @@ DISKHANDLE   equ 0F8FCh
 ;  del TPA que leen los programas, asi que todo lo que haya que proteger
 ;  tiene que estar por encima de LDR_BASE.
 ;
-;    $DA00-$DCFF   cargador + bios$tbl   (LDR_BASE, 768 B)
-;    $DD00-$DFFF   zona duplicada        (SWITCHER_BASE, 768 B)
+;    $D200-$D4FF   cargador + bios$tbl   (LDR_BASE, 768 B)
+;    $D500-$D7FF   zona duplicada        (SWITCHER_BASE, 768 B)
+;    $D800-$DFFF   fuente                (FONT_ADDR, 2048 B)
 ; ---------------------------------------------------------------------
-SWITCHER_BASE equ 0DD00h
+; CPM3_SD81: movida de $DD00 a $D500. La fuente necesita $D800-$DFFF --
+; el modo de 256 caracteres exige alineacion a 2 KB (SD81.v:1089 solo usa
+; ROMTABLE[15:11]), asi que $D800 es la unica base que encaja aqui, y se
+; comia el sitio de la zona duplicada. Sigue en el bloque 6, que es lo
+; unico que importa: SWITCHER_OFF se deriva sola.
+SWITCHER_BASE equ 0D500h
 SWITCHER_LEN  equ 0300h
 SWITCHER_BLK  equ 6           ; bloque que la contiene ($C000-$DFFF)
 

@@ -133,19 +133,27 @@ HEADER = """\
 ;  desde $6000, asi que el cargador deja la fuente ya puesta y no hace
 ;  falta copiarla en ?init.
 ;
-;  OJO -- la tabla EMPIEZA en el codigo 32 ($F900), no en el 0. Los
-;  glifos de los codigos 0-31 ($F800-$F8FF) no son imprimibles nunca
+;  OJO -- la tabla EMPIEZA en el codigo 32 (FONT_ADDR+$100), no en el 0.
+;  Los glifos de los codigos 0-31 no son imprimibles nunca
 ;  (?co los filtra con "cp 20h / ret c", y la pantalla se borra con el
 ;  32), asi que ese hueco se reutiliza: los codigos 0-15 para @bnkbf, el
 ;  buffer de 128 bytes del BIOS bancado (SCB.ASM), los 16-20 para el
 ;  estado de biosw, los 21-22 para bank$exit y el 23 para las variables
 ;  de ?xmove/?move (bank.z80) y los 24-31 para lstack, la pila de la
 ;  BDOS (init.z80). La
-;  base de la tabla que ve el hardware sigue siendo $F800: la fija el
-;  registro I y el modo de 256 caracteres exige alineacion a 2 KB.
+;  base de la tabla que ve el hardware es FONT_ADDR: la fija el registro
+;  I y el modo de 256 caracteres exige alineacion a 2 KB (SD81.v:1089
+;  solo usa ROMTABLE[15:11]).
+;
+;  CPM3_SD81: la fuente se fue del banco 7 ($F800) al banco de usuario
+;  ($D800) -- fase 1 del realineado DRI, ver layout_dri.md. Los 256 bytes
+;  de los glifos 0-31 quedan ahora SIN USAR: @bnkbf y las variables que
+;  los ocupaban tienen que seguir en memoria comun y se quedan en $F800.
+;  El "org" se deriva de FONT_ADDR (init.z80, incluido antes que esto en
+;  system.z80) para que no haya que tocar dos sitios.
 ; =====================================================================
 
-            org  0F900h
+            org  FONT_ADDR+100h
 
 """
 
