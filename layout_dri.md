@@ -345,3 +345,55 @@ aunque el cargador se ejecute; uno de ESCRITURA en la misma direccion si.
 La hipotesis es que EightyOne ata los breakpoints de ejecucion a la
 pagina FISICA mapeada cuando se definen, y el cargador corre en la de
 usuario. Antes de concluir nada de un BP que no salta, comprobarlo.
+
+
+---
+
+# Cierre: los cinco RSX funcionan
+
+| utilidad | RSX | estado |
+|---|---|---|
+| `SET` | `DIRLBL` | funciona |
+| `SAVE` | `SAVE` | funciona (`save` / programa / `save`) |
+| `GET` | `GET` | funciona, en `PROGRAM` y en `SYSTEM` |
+| `PUT` | `PUT` | funciona, en `PROGRAM` y en `SYSTEM` |
+| `SUBMIT` | `SUB` | funciona |
+
+Los tres fallos que quedaban resultaron ser **tres bugs nuestros
+distintos**, ninguno relacionado con el layout de DRI:
+
+**1. `rsx$chain` escribia siempre.** Reescribia `$0006`/`@MXTPA`/
+`bdosbase` aunque no hubiera desenganchado nada. PUT baja el techo de la
+TPA para su buffer de salida, y se lo machacabamos. Arreglo: salir sin
+tocar nada si la cabeza de la cadena no ha cambiado.
+
+**2. `ldr$err` tenia un `pop hl` de mas.** A `ldr$entry` se llega por un
+SALTO desde `$0006`, asi que la cima de la pila es la direccion de
+retorno del que hizo `call 5`; el `pop` se la comia y el `ret` sacaba una
+palabra ajena. Solo se llega a esa rama cuando falla el `F_OPEN`, que
+tecleando comandos a mano no pasa nunca -- por eso estuvo latente desde
+el primer dia.
+
+El sintoma no se parecia en nada a la causa: el `ret` saltaba a `$FF80`
+(basura `$FF`, mas alla del final del binario), o sea `RST 38`, que cae
+en la pagina cero -- tambien `$FF` -- y se autoalimenta; la pila se
+desbordaba 2 KB y el PC acababa deslizandose por el TPA. Con los
+registros del cuelgue no habia forma de llegar a la causa. **Lo unico
+que sirvio fue la traza de ejecucion hasta el primer `RST 38`.**
+
+**3. `ldr$rsx` reutilizaba modulos muertos.** Buscaba el modulo por
+nombre y, si lo encontraba, no lo recargaba. Pero un modulo que ya
+termino se marca con `REMOV<>0` y puede seguir enganchado un buen rato.
+Arreglo: un modulo marcado para morir cuenta como "no esta".
+
+## La leccion que vale para todo lo que recorra la cadena
+
+**`rsx$chain` solo se ejecuta cuando TERMINA UN TRANSITORIO.** Vive en
+`start:` del CCP, y `start:` solo corre tras un arranque en caliente. Los
+comandos INTERNOS de la CCP (`DIR`, `TYPE`...) no lo provocan.
+
+Consecuencia: la cadena puede acumular modulos muertos durante un tiempo
+indefinido, y cualquier codigo que la recorra tiene que contar con ello.
+Fue justo lo que hacia fallar a dos `submit` seguidos con un `.SUB` de
+puros comandos internos -- y lo que explicaba que meter un `date` en
+medio lo "arreglara", mientras que un `dir` no.

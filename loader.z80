@@ -258,11 +258,37 @@ rx$c1:      ld   a, (de)
             inc  hl
             inc  de
             djnz rx$c1
+; El nombre coincide, pero eso no basta: hay que mirar si el modulo
+; sigue VIVO. Un modulo que ya termino su trabajo se marca a si mismo con
+; REMOV ($0E) distinto de cero para que rsx$chain se lo lleve -- pero
+; rsx$chain solo corre en "start:", o sea cuando un transitorio termina y
+; hay arranque en caliente. Los comandos INTERNOS de la CCP (DIR, TYPE...)
+; no lo provocan, asi que un modulo muerto puede seguir enganchado un
+; buen rato.
+;
+; Si lo reutilizamos en ese estado, el programa nuevo corre con un RSX
+; agotado. Caso real: "submit" dos veces seguidas con un .SUB de puros
+; comandos internos -- el segundo se encontraba el modulo SUB de la tanda
+; anterior, con su fichero ya consumido, y la consola se quedaba sin
+; prompt y sin responder. Metiendo cualquier transitorio en medio (un
+; "date") funcionaba, porque ese si daba el warm boot que lo recogia.
+;
+; Asi que un modulo marcado para morir cuenta como "no esta": se sigue
+; buscando, y al final se carga uno nuevo delante. El viejo lo recoge
+; rsx$chain cuando le toque -- recorre la cadena en bucle mientras la
+; cabeza sea temporal, asi que se llevara los dos de una vez.
+            pop  hl                  ; HL = base del modulo encontrado
+            push hl
+            ld   de, 000Eh
+            add  hl, de              ; base+$0E = REMOV
+            ld   a, (hl)
             pop  hl
-            ret                      ; mismo nombre: ya esta, no hacer nada
+            or   a
+            jr   nz, rx$dead         ; marcado para quitarse: no vale
+            ret                      ; mismo nombre y vivo: ya esta
 
 rx$diff:    pop  hl                  ; seguir por el "JMP next" del prefijo
-            ld   de, 000Ah
+rx$dead:    ld   de, 000Ah
             add  hl, de
             ld   a, (hl)
             inc  hl
@@ -341,8 +367,27 @@ rl$done:    ld   hl, (ldr$dst)       ; su "JMP next" pasa a apuntar a la
             ret                       ; y el FCB del siguiente transitorio
 
 
+; CPM3_SD81: aqui habia un "pop hl" entre el call y el "ld hl,0". Sobra,
+; y descuadraba la pila.
+;
+; A ldr$entry se llega por un SALTO desde $0006 (es el primer eslabon de
+; la cadena de la BDOS), asi que lo que hay en la cima de la pila es la
+; direccion de retorno del que hizo "call 5" -- no hay nada nuestro
+; apilado encima: el unico "call" del camino (ldr$bdos, para el F_OPEN)
+; esta balanceado. El "pop hl" se comia esa direccion, y el "ret" de
+; abajo sacaba entonces la palabra siguiente, que no es suya.
+;
+; Solo se llega aqui cuando FALLA el F_OPEN, que tecleando comandos a
+; mano no pasa nunca -- el CCP no pide cargar lo que no existe. Por eso
+; el bug estuvo latente desde el primer dia y solo aparecio con SUBMIT y
+; con GET [SYSTEM], al procesar la ULTIMA linea del fichero.
+;
+; El sintoma no se parecia en nada a la causa: el "ret" saltaba a $FF80
+; (basura $FF, mas alla del final del binario), o sea RST 38, que cae en
+; la pagina cero -- tambien llena de $FF -- y se autoalimenta. La pila se
+; desbordaba 2 KB y el PC acababa deslizandose por el TPA. Lo unico que
+; llevo a la causa fue la traza de ejecucion hasta el primer RST 38.
 ldr$err:    call ldr$dma80
-            pop  hl
             ld   hl, 0
             ld   a, l
             ret
