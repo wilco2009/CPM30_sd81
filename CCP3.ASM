@@ -2835,6 +2835,7 @@ banked:	ds	1		;commonbase alto (idem)
 ; Destruye A, DE y HL. BC no se toca, y rsxck ya guarda HL por su cuenta.
 rsx$chain:
 	lhld	0006h		;cabeza de la cadena
+	shld	rsxc$old	;para saber al final si ha cambiado
 rsxc$scan:
 	lxi	d,LDR_BASE	;fin de la cadena?
 	mov	a,h
@@ -2861,12 +2862,10 @@ rsxc$mod:
 
 rsxc$empty:
 	lxi	h,LDR_BASE
-	shld	0006h
 	lxi	d,LDR_BASE	;bdosbase tambien, como lo dejo init.z80
 	jmp	rsxc$fix
 
 rsxc$keep:
-	shld	0006h
 	push	h		;HL = base+06 -> @MXTPA
 	lxi	d,-6
 	dad	d
@@ -2874,21 +2873,45 @@ rsxc$keep:
 	pop	h
 
 rsxc$fix:
-	; HL = valor para @MXTPA, DE = valor para bdosbase
+	; HL = valor para @MXTPA, DE = valor para bdosbase.
+	;
+	; CPM3_SD81: si la cabeza NO ha cambiado no se ha desenganchado
+	; nada, y entonces hay que salir SIN TOCAR NADA. Escribir los tres
+	; campos "por si acaso" parece inofensivo -- son los mismos valores
+	; que dejo ldr$rsx -- pero no lo es: un RSX activo puede haberlos
+	; movido a proposito. PUT baja el techo de la TPA para reservarse el
+	; buffer de salida, y al recalcularlo desde la cadena se lo
+	; machacabamos; el buffer quedaba dentro de la TPA y se lo comia el
+	; primer programa. Sintoma: "PUT ... TO FILE x [SYSTEM]" corrompia
+	; la memoria (la pantalla se llenaba de basura).
 	push	d
+	lda	rsxc$old
+	cmp	l
+	jnz	rsxc$do
+	lda	rsxc$old+1
+	cmp	h
+	jz	rsxc$none	;misma cabeza: no se quito nada
+rsxc$do:
+	shld	0006h
 	xchg			;DE = valor de @MXTPA
 	lhld	scbaddr
 	mvi	l,mxtpa
 	mov	m,e
 	inx	h
 	mov	m,d
-	pop	d
+	pop	d		;DE = valor de bdosbase
 	lhld	scbaddr
 	mvi	l,bdosbase
 	mov	m,e
 	inx	h
 	mov	m,d
 	ret
+rsxc$none:
+	pop	d
+	ret
+
+rsxc$old:
+	ds	2		;cabeza de la cadena al entrar
 ;
 option:	ds	1		;'[' in line?
 passwd:	ds	10		;password
