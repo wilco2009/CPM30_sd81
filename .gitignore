@@ -29,3 +29,7 @@ traza.txt
 
 # Copias de seguridad sueltas
 *.bak
+
+# Binarios de distribucion de DRI y Turbo Pascal: no van al repo.
+systemdisks/
+turbo.ovr
