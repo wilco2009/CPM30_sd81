@@ -1,0 +1,40 @@
+; =====================================================================
+;  vidtest.z80 - TEST 1 del video: el minimo absoluto.
+;
+;  Objetivo: saber si la pantalla pinta ALGO, sin nada de CP/M de por
+;  medio. Si esto no se ve, el problema no esta en el puerto.
+;
+;  Lo que NO hace, a proposito (cada una se ira anadiendo en un test
+;  posterior, de una en una):
+;    - NO activa MC45           (no hace falta: $6000 tiene A15=0)
+;    - NO activa Superfast      (modo ZX81 nativo)
+;    - NO toca DFILE_OVR/ATTR_OVR (usa el DFILE del BASIC, tal cual)
+;    - NO toca el paginado ni el registro I
+;    - NO usa la fuente de 256 caracteres
+;
+;  Escribe en el fichero de pantalla que ya tiene montado el BASIC
+;  (D_FILE, variable del sistema en $400C) y vuelve. Como volvemos a
+;  BASIC, es la ROM la que sigue generando el video, asi que lo escrito
+;  se queda en pantalla.
+;
+;  Arranque:  RAND USR 24576
+; =====================================================================
+
+            org  06000h
+
+start:      ld   hl,(0400Ch)     ; D_FILE
+            inc  hl              ; saltar el NEWLINE que abre la pantalla
+            ld   de,msg
+            ld   b,msglen
+vt_loop:    ld   a,(de)
+            ld   (hl),a
+            inc  hl
+            inc  de
+            djnz vt_loop
+            ret                  ; de vuelta a BASIC
+
+msg:
+            defb 039h,02Ah,038h,039h,01Dh,000h,03Bh,02Eh,029h,02Ah,034h,000h,033h,026h,039h,02Eh,03Bh,034h
+msglen      equ  $-msg
+
+            end

@@ -1,0 +1,161 @@
+; =====================================================================
+;  vidtest3.z80 - TEST 3 del video: el test 2, cambiando UNICAMENTE las
+;  direcciones del DFILE y de los atributos por las de hoy.
+;
+;    DFILE_val  $EA00 -> $E899      ATTR_val  $E200 -> $E100
+;
+;  Es el candidato mas fuerte: $E899 no esta alineado ni a 256, mientras
+;  que las viejas eran multiplos de $200. Todo lo demas es identico al
+;  test 2, que se ve bien.
+;
+;  Respecto al test 1 anade, de golpe, todo lo que hacia aquella version:
+;    - MC45 ON (comando MCU $13), pero NO mc45_ext67 (registro 2062),
+;      que no existia entonces
+;    - la fuente copiada por LDIR desde la ROM ($1E00), x4
+;    - registro I = $F8
+;    - paginas 8/9/10 en los bloques 0/1/2
+;    - DFILE_OVR = $EA00 y ATTR_OVR = $E200  (las direcciones VIEJAS)
+;    - los registros 2045 / 2094 / 2095 / 2056 en ese orden
+;    - modo de 256 caracteres (comando MCU $41)
+;
+;  Lo que NO hace, porque llego despues y es candidato a ser el culpable:
+;    - NO toca el Chroma ($7FEF)
+;    - NO usa las direcciones nuevas ($E899 / $E100)
+;    - NO usa la tabla de fuentes embebida
+;    - NO activa mc45_ext67 ni FULL_PAGING
+;
+;  OJO con el orden: "ld (2056),a" cierra la ventana MMIO, asi que todo
+;  lo que se escriba por MMIO tiene que ir ANTES.
+;
+;  No vuelve a BASIC: en Superfast el video lo genera el FPGA, asi que
+;  se queda en un bucle y la imagen permanece. Para salir, reset.
+;
+;  Arranque:  RAND USR 24576
+; =====================================================================
+
+DFILE_OVR      equ 2096
+DFILE_OVR_EN   equ 2098
+DFILE_val      equ 0E899h
+ATTR_OVR       equ 2059
+ATTR_OVR_EN    equ 2061
+ATTR_val       equ 0E100h
+FONT_I         equ 0F8h
+FONT_ADDR      equ 0F800h
+CHARSET_SRC    equ 01E00h
+ROWS           equ 24
+COLS           equ 80
+DataPort       equ 0A7h
+ClkPort        equ 0AFh
+CMD_chars256   equ 041h
+CMD_mc45on     equ 013h
+
+            org  06000h
+
+start:      ld   a, CMD_mc45on
+            call mcu_send
+            di
+            xor  a
+            out  (0FDh), a       ; NMI off
+
+            ld   a, FONT_I
+            ld   i, a
+
+            ld   de, FONT_ADDR   ; fuente: copia de ROM x4
+            ld   b, 4
+cf_loop:    push bc
+            ld   hl, CHARSET_SRC
+            ld   bc, 512
+            ldir
+            pop  bc
+            djnz cf_loop
+
+            ld   a, (8 << 3)  | 0
+            out  (0E7h), a
+            ld   a, (9 << 3)  | 1
+            out  (0E7h), a
+            ld   a, (10 << 3) | 2
+            out  (0E7h), a
+
+            ld   hl, DFILE_val
+            ld   (DFILE_OVR), hl
+            ld   a, 170
+            ld   (DFILE_OVR_EN), a
+            ld   hl, ATTR_val
+            ld   (ATTR_OVR), hl
+            ld   a, 170
+            ld   (ATTR_OVR_EN), a
+
+            ld   a, 174
+            ld   (2045), a
+            xor  a
+            ld   (2094), a
+            ld   (2095), a
+            ld   (2056), a       ; cierra la ventana MMIO -- nada de MMIO detras
+
+            ld   a, CMD_chars256
+            call mcu_send
+
+            call clear_screen
+            call clear_attrs
+
+            ld   hl, DFILE_val+1 ; el mensaje, en la primera fila
+            ld   de, msg
+            ld   b, msglen
+msg_loop:   ld   a, (de)
+            ld   (hl), a
+            inc  hl
+            inc  de
+            djnz msg_loop
+
+stop:       jr   stop
+
+clear_screen:
+            ld   hl, DFILE_val+1
+            ld   b, ROWS
+ics_row:    push bc
+            ld   c, COLS
+            xor  a
+ics_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ics_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ics_row
+            ret
+
+clear_attrs:
+            ld   hl, ATTR_val+1
+            ld   b, ROWS
+ica_row:    push bc
+            ld   c, COLS
+            ld   a, 0Fh
+ica_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ica_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ica_row
+            ret
+
+mcu_send:   ld   b,a
+            in   a,(ClkPort)
+            ld   c,a
+            ld   a,b
+            out  (DataPort),a
+            ld   a,c
+            cpl
+            ld   c,a
+ms_wait:    in   a,(ClkPort)
+            xor  c
+            jp   m, ms_wait
+            ret
+
+msg:
+            defb 039h,02Ah,038h,039h,01Fh,000h,029h,02Eh,037h,02Ah,028h,028h,02Eh,034h,033h,02Ah,038h,000h,033h,03Ah,02Ah,03Bh,026h,038h
+msglen      equ  $-msg
+
+            end

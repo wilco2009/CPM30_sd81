@@ -1,0 +1,281 @@
+; =====================================================================
+;  blktest.z80 - MAPA DE EJECUTABILIDAD POR BLOQUE
+;
+;  Responde a una sola pregunta: en que bloques de 8 KB se puede
+;  EJECUTAR codigo y en cuales no. Es lo que hace falta para decidir que
+;  tocar en la FPGA. No lleva nada de CP/M.
+;
+;  HECHO DESDE EL FUENTE DEL SISTEMA: incluye memmap.inc y
+;  font_image.z80 de verdad, asi que las constantes (T_DFILE, T_ATTR,
+;  FONT_ADDR, FONT_I...) son EXACTAMENTE las del CP/M, no una copia que
+;  se pueda desincronizar. La configuracion de la FPGA replica la de
+;  "start:" (system.z80), en el mismo orden.
+;
+;  METODO: para cada bloque escribe en el un poke que pinta una 'K' y
+;  hace "ret", marca su numero en pantalla ANTES de llamarlo, y lo llama.
+;  Si el bloque ejecuta aparece la K y seguimos; si no, nos quedamos
+;  colgados ahi y en pantalla queda el ultimo numero SIN K.
+;
+;    fila 2:  bloques 0 a 6
+;    fila 4:  el bloque 7, en cuatro sitios distintos
+;
+;  ZONAS PROHIBIDAS para los pokes (se corrompe la pantalla o la fuente):
+;    $D800-$DFFF   tabla de caracteres (FONT_ADDR)
+;    $E100-$E898   ATTR
+;    $E899-$F031   DFILE
+;    $6000-$6FFF   este mismo programa
+;
+;  Arranque:  RAND USR 24576
+; =====================================================================
+
+            include "memmap.inc"
+
+CMD_mc45on  equ  013h
+
+; ---------------------------------------------------------------------
+;  DONDE PONEMOS LA PANTALLA.
+;
+;  El override del FPGA no impone ninguna alineacion, asi que ATTR y
+;  DFILE pueden ir a cualquier sitio. Cada uno ocupa 1+24*81 = 1945
+;  bytes. Cambiando estas dos constantes se mueve la memoria de video de
+;  bloque, para ver si el problema de ejecucion la sigue.
+;
+;    bloque 7 (como el sistema):  T_ATTR=0E100h  T_DFILE=0E899h
+;    bloque 4 (este experimento): T_ATTR=08000h  T_DFILE=08799h
+;
+;  OJO al moverla: hay que revisar que ninguna direccion de prueba caiga
+;  dentro del nuevo rango, ni dentro de la fuente ($D800-$DFFF), ni sobre
+;  este programa ($6000-$6FFF).
+; ---------------------------------------------------------------------
+T_ATTR      equ  08000h
+T_DFILE     equ  08799h
+
+            org  06000h
+
+start:      di
+            xor  a
+            out  (0FDh), a       ; NMI off
+
+            ld   a, CMD_mc45on
+            call mcu_send
+            ld   a, 170
+            ld   (2062), a       ; mc45_ext67
+
+            ld   a, FONT_I
+            ld   i, a
+
+            ld   a, (8 << 3)  | 0
+            out  (0E7h), a
+            ld   a, (9 << 3)  | 1
+            out  (0E7h), a
+            ld   a, (10 << 3) | 2
+            out  (0E7h), a
+
+            ld   hl, T_DFILE
+            ld   (DFILE_OVR), hl
+            ld   a, 170
+            ld   (DFILE_OVR_EN), a
+            ld   hl, T_ATTR
+            ld   (ATTR_OVR), hl
+            ld   a, 170
+            ld   (ATTR_OVR_EN), a
+
+            ld   bc, CHROMA_PORT
+            ld   a, CHROMA_val
+            out  (c), a
+
+            ld   a, 174
+            ld   (2045), a
+            xor  a
+            ld   (2094), a
+            ld   (2095), a
+            xor  a
+            ld   (2056), a       ; cierra la ventana MMIO
+
+            ld   a, CMD_chars256
+            call mcu_send
+            call clear_screen
+            call clear_attrs
+            ld   a, CMD_fullpaging
+            call mcu_send
+
+            ld   de, T_DFILE+1
+            ld   hl, msg
+            ld   b, msglen
+            call prt
+
+; Pintamos PRIMERO los numeros de todos los bloques. Asi, si uno cuelga,
+; en pantalla queda el mapa entero y se ve exactamente cual se quedo sin
+; K -- antes, los bloques posteriores al fallo ni siquiera aparecian.
+            ld   de, T_DFILE+1+2*81
+            ld   hl, rule7
+            ld   b, rule7len
+            call prt
+            ld   de, T_DFILE+1+4*81
+            ld   hl, rule4
+            ld   b, rule4len
+            call prt
+
+; --- bloques 0 a 6 (fila 2) ------------------------------------------
+            ld   hl, pk0
+            ld   de, 01000h
+            ld   bc, pklen
+            ldir
+            call 01000h
+            ld   hl, pk1
+            ld   de, 03000h
+            ld   bc, pklen
+            ldir
+            call 03000h
+            ld   hl, pk2
+            ld   de, 05000h
+            ld   bc, pklen
+            ldir
+            call 05000h
+            ld   hl, pk3
+            ld   de, 07000h
+            ld   bc, pklen
+            ldir
+            call 07000h
+            ld   hl, pk4
+            ld   de, 09000h
+            ld   bc, pklen
+            ldir
+            call 09000h
+            ld   hl, pk5
+            ld   de, 0B000h
+            ld   bc, pklen
+            ldir
+            call 0B000h
+            ld   hl, pk6
+            ld   de, 0C000h
+            ld   bc, pklen
+            ldir
+            call 0C000h
+
+; --- el bloque 7, cuatro direcciones (fila 4) ------------------------
+            ld   hl, q70
+            ld   de, 0E000h
+            ld   bc, pklen
+            ldir
+            call 0E000h
+            ld   hl, q71
+            ld   de, 0F100h
+            ld   bc, pklen
+            ldir
+            call 0F100h
+            ld   hl, q72
+            ld   de, 0F400h
+            ld   bc, pklen
+            ldir
+            call 0F400h
+            ld   hl, q73
+            ld   de, 0F700h
+            ld   bc, pklen
+            ldir
+            call 0F700h
+
+stop:       jr   stop
+
+; ---------------------------------------------------------------------
+prt:        ld   a,(hl)          ; HL=msg, B=len, DE=destino
+            ld   (de),a
+            inc  hl
+            inc  de
+            djnz prt
+            ret
+
+clear_screen:
+            ld   hl, T_DFILE+1
+            ld   b, ROWS
+ics_row:    push bc
+            ld   c, COLS
+            xor  a
+ics_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ics_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ics_row
+            ret
+
+clear_attrs:
+            ld   hl, T_ATTR+1
+            ld   b, ROWS
+ica_row:    push bc
+            ld   c, COLS
+            ld   a, ATTR_SCREEN
+ica_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ica_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ica_row
+            ret
+
+mcu_send:   ld   b,a
+            in   a,(ClkPort)
+            ld   c,a
+            ld   a,b
+            out  (DataPort),a
+            ld   a,c
+            cpl
+            ld   c,a
+ms_wait:    in   a,(ClkPort)
+            xor  c
+            jp   m, ms_wait
+            ret
+
+; ---------------------------------------------------------------------
+;  Los pokes: ld a,'K' / ld (posicion),a / ret
+pk0:       defb 03Eh,'K',032h
+            defw T_DFILE+1+2*81+1
+            defb 0C9h
+pk1:       defb 03Eh,'K',032h
+            defw T_DFILE+1+2*81+3
+            defb 0C9h
+pk2:       defb 03Eh,'K',032h
+            defw T_DFILE+1+2*81+5
+            defb 0C9h
+pk3:       defb 03Eh,'K',032h
+            defw T_DFILE+1+2*81+7
+            defb 0C9h
+pk4:       defb 03Eh,'K',032h
+            defw T_DFILE+1+2*81+9
+            defb 0C9h
+pk5:       defb 03Eh,'K',032h
+            defw T_DFILE+1+2*81+11
+            defb 0C9h
+pk6:       defb 03Eh,'K',032h
+            defw T_DFILE+1+2*81+13
+            defb 0C9h
+q70:       defb 03Eh,'K',032h
+            defw T_DFILE+1+4*81+1
+            defb 0C9h
+q71:       defb 03Eh,'K',032h
+            defw T_DFILE+1+4*81+3
+            defb 0C9h
+q72:       defb 03Eh,'K',032h
+            defw T_DFILE+1+4*81+5
+            defb 0C9h
+q73:       defb 03Eh,'K',032h
+            defw T_DFILE+1+4*81+7
+            defb 0C9h
+
+pklen       equ  6
+
+rule7:      defb '0',' ','1',' ','2',' ','3',' ','4',' ','5',' ','6'
+rule7len    equ  $-rule7
+rule4:      defb '0',' ','1',' ','2',' ','3'
+rule4len    equ  $-rule4
+
+msg:        defb 'M','A','P','A',' ','D','E',' ','E','J','E','C','U','C','I','O','N',' ','P','O','R',' ','B','L','O','Q','U','E'
+msglen      equ  $-msg
+
+            include "font_image.z80"
+
+            end

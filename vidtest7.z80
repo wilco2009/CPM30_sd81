@@ -1,0 +1,174 @@
+; =====================================================================
+;  vidtest7.z80 - TEST 7 del video: el test 6 anadiendo UNICAMENTE
+;  FULL_PAGING (comando MCU $1D).
+;
+;  Es lo ultimo de la secuencia de ?init que faltaba por replicar, y lo
+;  mas invasivo: cambia el mapa de memoria entero.
+;
+;  OJO con el orden: el mensaje se escribe ANTES de activarlo. Nuestro
+;  codigo vive en $6000, o sea en el bloque 3, y si FULL_PAGING remapea
+;  ese bloque el test se cuelga ahi mismo -- pero la pantalla ya estara
+;  pintada, que es lo que queremos observar. Si la imagen sobrevive, el
+;  paginado no toca el video; si se borra o se corrompe, si.
+;
+;  Respecto al test 1 anade, de golpe, todo lo que hacia aquella version:
+;    - MC45 ON (comando MCU $13), pero NO mc45_ext67 (registro 2062),
+;      que no existia entonces
+;    - la fuente copiada por LDIR desde la ROM ($1E00), x4
+;    - registro I = $F8
+;    - paginas 8/9/10 en los bloques 0/1/2
+;    - DFILE_OVR = $EA00 y ATTR_OVR = $E200  (las direcciones VIEJAS)
+;    - los registros 2045 / 2094 / 2095 / 2056 en ese orden
+;    - modo de 256 caracteres (comando MCU $41)
+;
+;  Lo que NO hace, porque llego despues y es candidato a ser el culpable:
+;    - NO toca el Chroma ($7FEF)
+;    - NO usa las direcciones nuevas ($E899 / $E100)
+;    - NO usa la tabla de fuentes embebida
+;    - NO activa mc45_ext67 ni FULL_PAGING
+;
+;  OJO con el orden: "ld (2056),a" cierra la ventana MMIO, asi que todo
+;  lo que se escriba por MMIO tiene que ir ANTES.
+;
+;  No vuelve a BASIC: en Superfast el video lo genera el FPGA, asi que
+;  se queda en un bucle y la imagen permanece. Para salir, reset.
+;
+;  Arranque:  RAND USR 24576
+; =====================================================================
+
+DFILE_OVR      equ 2096
+DFILE_OVR_EN   equ 2098
+DFILE_val      equ 0E899h
+ATTR_OVR       equ 2059
+ATTR_OVR_EN    equ 2061
+ATTR_val       equ 0E100h
+FONT_I         equ 0F8h
+FONT_ADDR      equ 0F800h
+CHARSET_SRC    equ 01E00h
+ROWS           equ 24
+COLS           equ 80
+DataPort       equ 0A7h
+ClkPort        equ 0AFh
+CMD_chars256   equ 041h
+CMD_mc45on     equ 013h
+CMD_fullpaging equ 01Dh
+CHROMA_PORT    equ 07FEFh
+CHROMA_val     equ 031h
+
+            org  06000h
+
+start:      ld   a, CMD_mc45on
+            call mcu_send
+            di
+            xor  a
+            out  (0FDh), a       ; NMI off
+
+            ld   a, FONT_I
+            ld   i, a
+
+            ; (la fuente ya viene en el binario, en $F900)
+
+            ld   a, (8 << 3)  | 0
+            out  (0E7h), a
+            ld   a, (9 << 3)  | 1
+            out  (0E7h), a
+            ld   a, (10 << 3) | 2
+            out  (0E7h), a
+
+            ld   hl, DFILE_val
+            ld   (DFILE_OVR), hl
+            ld   a, 170
+            ld   (DFILE_OVR_EN), a
+            ld   hl, ATTR_val
+            ld   (ATTR_OVR), hl
+            ld   a, 170
+            ld   (ATTR_OVR_EN), a
+
+            ld   bc, CHROMA_PORT
+            ld   a, CHROMA_val
+            out  (c), a
+
+            ld   a, 174
+            ld   (2045), a
+            xor  a
+            ld   (2094), a
+            ld   (2095), a
+
+            ld   a, 170
+            ld   (2062), a       ; mc45_ext67: MC45 en los bloques 6 y 7
+            xor  a
+
+            ld   (2056), a       ; cierra la ventana MMIO -- nada de MMIO detras
+
+            ld   a, CMD_chars256
+            call mcu_send
+
+            call clear_screen
+            call clear_attrs
+
+            ld   hl, DFILE_val+1 ; el mensaje, en la primera fila
+            ld   de, msg
+            ld   b, msglen
+msg_loop:   ld   a, (de)
+            ld   (hl), a
+            inc  hl
+            inc  de
+            djnz msg_loop
+
+            ld   a, CMD_fullpaging   ; lo ULTIMO, con la pantalla ya escrita
+            call mcu_send
+
+stop:       jr   stop
+
+clear_screen:
+            ld   hl, DFILE_val+1
+            ld   b, ROWS
+ics_row:    push bc
+            ld   c, COLS
+            xor  a
+ics_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ics_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ics_row
+            ret
+
+clear_attrs:
+            ld   hl, ATTR_val+1
+            ld   b, ROWS
+ica_row:    push bc
+            ld   c, COLS
+            ld   a, 0Fh
+ica_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ica_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ica_row
+            ret
+
+mcu_send:   ld   b,a
+            in   a,(ClkPort)
+            ld   c,a
+            ld   a,b
+            out  (DataPort),a
+            ld   a,c
+            cpl
+            ld   c,a
+ms_wait:    in   a,(ClkPort)
+            xor  c
+            jp   m, ms_wait
+            ret
+
+msg:
+            defb 'T','E','S','T','7',' ','F','U','L','L',' ','P','A','G','I','N','G'
+msglen      equ  $-msg
+
+            include "fonttest.z80"
+
+            end
