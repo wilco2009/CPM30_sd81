@@ -215,10 +215,171 @@ ansi_sep:   jp   ansi_push          ; ';' cierra un parametro
 ansi_end:   call ansi_push          ; una letra cierra el ultimo y ejecuta
             ld   a,c
             cp   'm'
-            jr   z,ansi_sgr
+            jp   z,ansi_sgr
+            cp   'H'
+            jp   z,ansi_cup         ; CUP  ESC[fila;colH
+            cp   'f'
+            jp   z,ansi_cup         ; HVP, lo mismo
+            cp   'A'
+            jp   z,ansi_cuu         ; arriba
+            cp   'B'
+            jp   z,ansi_cud         ; abajo
+            cp   'C'
+            jp   z,ansi_cuf         ; derecha
+            cp   'D'
+            jp   z,ansi_cub         ; izquierda
+            cp   'J'
+            jp   z,ansi_ed          ; borrar pantalla
+            cp   'K'
+            jp   z,ansi_el          ; borrar linea
 ansi_done:  xor  a
             ld   (term_state),a
             ret
+
+; --- helpers ---------------------------------------------------------
+;  ansi_n1  - primer parametro, con 1 por defecto (los movimientos de
+;             cursor son "n posiciones", y ESC[A vale por ESC[1A)
+;  ansi_fill- rellena BC posiciones desde HL (direccion en el DFILE) con
+;             espacios y cur_attr, caracter y color a la vez
+ansi_n1:    ld   a,(ansi_par)
+            or   a
+            ret  nz
+            inc  a
+            ret
+
+ansi_fill:  ld   a,b
+            or   c
+            ret  z
+af_loop:    ld   (hl),' '
+            push hl
+            ld   de,ATTR_OFF
+            add  hl,de
+            ld   a,(cur_attr)
+            ld   (hl),a
+            pop  hl
+            inc  hl
+            dec  bc
+            ld   a,b
+            or   c
+            jr   nz,af_loop
+            ret
+
+; --- CUP: ESC [ fila ; col H  (1-based; sin parametros, esquina) ------
+ansi_cup:   ld   a,(ansi_par)
+            or   a
+            jr   nz,cup_r
+            inc  a
+cup_r:      dec  a
+            cp   SCRH
+            jr   c,cup_rok
+            ld   a,SCRH-1
+cup_rok:    ld   (cur_row),a
+            ld   a,(ansi_cnt)
+            cp   2
+            jr   c,cup_c0           ; sin columna: la 1
+            ld   a,(ansi_par+1)
+            or   a
+            jr   nz,cup_c
+            inc  a
+cup_c:      dec  a
+            jr   cup_cc
+cup_c0:     xor  a
+cup_cc:     cp   SCRW
+            jr   c,cup_cok
+            ld   a,SCRW-1
+cup_cok:    ld   (cur_col),a
+            jp   ansi_done
+
+; --- movimiento del cursor -------------------------------------------
+ansi_cuu:   call ansi_n1
+            ld   b,a
+            ld   a,(cur_row)
+            sub  b
+            jr   nc,cuu_ok
+            xor  a                  ; tope arriba
+cuu_ok:     ld   (cur_row),a
+            jp   ansi_done
+
+ansi_cud:   call ansi_n1
+            ld   b,a
+            ld   a,(cur_row)
+            add  a,b
+            cp   SCRH
+            jr   c,cud_ok
+            ld   a,SCRH-1           ; tope abajo
+cud_ok:     ld   (cur_row),a
+            jp   ansi_done
+
+ansi_cuf:   call ansi_n1
+            ld   b,a
+            ld   a,(cur_col)
+            add  a,b
+            cp   SCRW
+            jr   c,cuf_ok
+            ld   a,SCRW-1           ; tope derecha
+cuf_ok:     ld   (cur_col),a
+            jp   ansi_done
+
+ansi_cub:   call ansi_n1
+            ld   b,a
+            ld   a,(cur_col)
+            sub  b
+            jr   nc,cub_ok
+            xor  a                  ; tope izquierda
+cub_ok:     ld   (cur_col),a
+            jp   ansi_done
+
+; --- ED: ESC[J del cursor al final, ESC[2J toda la pantalla ----------
+;  El cursor NO se mueve con ESC[J (lo dice el estandar). Con ESC[2J
+;  muchos programas cuentan con que ademas va a la esquina, asi que se
+;  reutiliza cls, que ya borra caracteres y atributos y hace home.
+ansi_ed:    ld   a,(ansi_par)
+            cp   2
+            jr   nz,ed_0
+            call cls                ; CALL, no JP: hay que volver para
+            jp   ansi_done          ; dejar term_state en 0. Con "jp z,cls"
+                                     ; el parser se quedaba en el estado 4 y
+                                     ; se comia el ESC de la secuencia
+                                     ; siguiente.
+ed_0:       ld   a,(ansi_par)
+            or   a
+            jp   nz,ansi_done       ; ESC[1J no implementado
+            call char_addr          ; del cursor al final de la pantalla
+            push hl
+            ex   de,hl
+            ld   hl,DFILE+1+ROWSTRIDE*SCRH
+            or   a
+            sbc  hl,de
+            ld   b,h
+            ld   c,l
+            pop  hl
+            call ansi_fill
+            jp   ansi_done
+
+; --- EL: ESC[K del cursor al fin de linea, ESC[2K la linea entera -----
+ansi_el:    ld   a,(ansi_par)
+            cp   2
+            jr   z,el_all
+            or   a
+            jp   nz,ansi_done       ; ESC[1K no implementado
+            call char_addr          ; del cursor al fin de linea
+            ld   a,(cur_col)
+            ld   b,a
+            ld   a,SCRW
+            sub  b
+            jr   el_fill
+el_all:     ld   a,(cur_col)        ; la linea entera: retroceder al margen
+            push af
+            xor  a
+            ld   (cur_col),a
+            call char_addr
+            pop  af
+            ld   (cur_col),a
+            ld   a,SCRW
+el_fill:    ld   c,a
+            ld   b,0
+            call ansi_fill
+            jp   ansi_done
 
 ansi_push:  ld   a,(ansi_cnt)
             cp   4
@@ -241,7 +402,7 @@ ansi_sgr:   ld   a,(ansi_cnt)
             jr   nz,sgr_loop0
             ld   a,ATTR_SCREEN      ; "ESC [ m" a secas = reset
             ld   (cur_attr),a
-            jr   ansi_done
+            jp   ansi_done
 sgr_loop0:  ld   b,a
             ld   hl,ansi_par
 sgr_loop:   ld   a,(hl)
@@ -252,7 +413,7 @@ sgr_loop:   ld   a,(hl)
             pop  hl
             inc  hl
             djnz sgr_loop
-            jr   ansi_done
+            jp   ansi_done
 
 sgr_apply:  or   a                  ; 0 = todo a los valores por defecto
             jr   nz,sgr_n1
