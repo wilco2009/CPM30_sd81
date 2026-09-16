@@ -21,7 +21,13 @@
 
 ;            public ?ci,?co,?cist,?cost,?cinit,@ctbl
 
-DFILE       equ 0E899h          ; buffer de pantalla -- TIENE QUE COINCIDIR
+; CPM3_SD81: DFILE y ATTR salen de memmap.inc, que es donde viven
+; DFILE_val/ATTR_val -- los mismos que programa start: en el override del
+; FPGA. Antes esto era un 0E899h a pelo con un comentario que decia
+; "TIENE QUE COINCIDIR"; ahora no puede dejar de coincidir.
+DFILE       equ DFILE_val         ; buffer de pantalla
+ATTR        equ ATTR_val          ; atributos, misma geometria que el DFILE
+ATTR_OFF    equ ATTR_val-DFILE_val ; de un caracter a su color
                                 ; con DFILE_val (init.z80), que es quien se
                                 ; lo comunica al FPGA por POKE 2096/2097.
                                 ; Movido desde $EA00 al empaquetar el banco 7
@@ -115,8 +121,10 @@ cst_yes:    ld   a,0FFh
             jr   z,co_bs
             cp   20h
             ret  c                  ; otros controles -> ignorar
-            cp   080h
-            ret  nc
+; CPM3_SD81: aqui habia un "cp 080h / ret nc" que tiraba todo lo que no
+; fuera ASCII imprimible. La fuente tiene los 256 glifos ($20-$FF), asi
+; que no habia motivo: los codigos altos son los graficos y los acentos
+; que necesita un terminal de verdad.
             jp   print_glyph
 co_esc:     ld   a,1
             ld   (term_state),a     ; estado 1: recibido ESC
@@ -132,12 +140,23 @@ co_bs:      ld   a,(cur_col)
             ld   (cur_col),a
             ret
 ; --- secuencia ESC '=' fila col (gotoxy ADM-3A, offset $20) ---
-co_seq:     dec  a
+co_seq:     cp   4
+            jp   z,ansi_char        ; estado 4: dentro de ESC [
+            dec  a
             jr   nz,co_seq23        ; estado != 1
-            ld   a,c                ; estado 1: esperar '='
+            ld   a,c                ; estado 1: '=' (ADM-3A) o '[' (ANSI)
             cp   '='
-            jr   nz,co_abort        ; otra secuencia -> ignorar
-            ld   a,2
+            jr   z,co_adm3a
+            cp   '['
+            jr   z,co_ansi
+            jr   co_abort           ; otra secuencia -> ignorar
+co_adm3a:   ld   a,2
+            ld   (term_state),a
+            ret
+co_ansi:    xor  a                  ; empieza ESC [ : parametros a cero
+            ld   (ansi_n),a
+            ld   (ansi_cnt),a
+            ld   a,4
             ld   (term_state),a
             ret
 co_seq23:   dec  a
@@ -161,6 +180,129 @@ co_abort:   xor  a
             ld   (term_state),a     ; fin de secuencia
             ret
 
+; =====================================================================
+;  ESC [ ... - secuencias ANSI (CSI).
+;
+;  De momento solo se interpreta la letra 'm' (SGR, el color); las demas
+;  se consumen y se ignoran, que es lo correcto: un terminal que no
+;  entiende una secuencia debe tragarsela entera, no escupirla por
+;  pantalla. La fase siguiente sera anadir CUP/ED/EL y el movimiento del
+;  cursor, para lo que ya esta montado el parser.
+;
+;  El byte de atributo es PPPP IIII: papel en los bits 7-4, tinta en los
+;  3-0, y en cada nibble el bit alto es el brillo. Los colores del
+;  hardware NO estan en el orden de ANSI, de ahi la tabla ansi_ctab.
+; =====================================================================
+ansi_char:  ld   a,c
+            cp   ';'
+            jr   z,ansi_sep
+            cp   '0'
+            jr   c,ansi_end
+            cp   '9'+1
+            jr   nc,ansi_end
+            sub  '0'                ; digito: n = n*10 + digito
+            ld   e,a
+            ld   a,(ansi_n)
+            ld   d,a
+            add  a,a
+            add  a,a
+            add  a,d
+            add  a,a
+            add  a,e
+            ld   (ansi_n),a
+            ret
+ansi_sep:   jp   ansi_push          ; ';' cierra un parametro
+ansi_end:   call ansi_push          ; una letra cierra el ultimo y ejecuta
+            ld   a,c
+            cp   'm'
+            jr   z,ansi_sgr
+ansi_done:  xor  a
+            ld   (term_state),a
+            ret
+
+ansi_push:  ld   a,(ansi_cnt)
+            cp   4
+            jr   nc,ap_full         ; mas de 4 parametros: se descartan
+            ld   hl,ansi_par
+            ld   e,a
+            ld   d,0
+            add  hl,de
+            ld   a,(ansi_n)
+            ld   (hl),a
+            ld   a,(ansi_cnt)
+            inc  a
+            ld   (ansi_cnt),a
+ap_full:    xor  a
+            ld   (ansi_n),a
+            ret
+
+ansi_sgr:   ld   a,(ansi_cnt)
+            or   a
+            jr   nz,sgr_loop0
+            ld   a,ATTR_SCREEN      ; "ESC [ m" a secas = reset
+            ld   (cur_attr),a
+            jr   ansi_done
+sgr_loop0:  ld   b,a
+            ld   hl,ansi_par
+sgr_loop:   ld   a,(hl)
+            push hl
+            push bc
+            call sgr_apply
+            pop  bc
+            pop  hl
+            inc  hl
+            djnz sgr_loop
+            jr   ansi_done
+
+sgr_apply:  or   a                  ; 0 = todo a los valores por defecto
+            jr   nz,sgr_n1
+            ld   a,ATTR_SCREEN
+            ld   (cur_attr),a
+            ret
+sgr_n1:     cp   1                  ; 1 = brillo en la tinta
+            jr   nz,sgr_fg
+            ld   a,(cur_attr)
+            or   008h
+            ld   (cur_attr),a
+            ret
+sgr_fg:     cp   30                 ; 30-37 = color de tinta
+            ret  c
+            cp   38
+            jr   nc,sgr_bg
+            sub  30
+            call ansi2chroma
+            ld   b,a
+            ld   a,(cur_attr)
+            and  0F8h               ; conserva papel y el brillo de tinta
+            or   b
+            ld   (cur_attr),a
+            ret
+sgr_bg:     cp   40                 ; 40-47 = color de papel
+            ret  c
+            cp   48
+            ret  nc
+            sub  40
+            call ansi2chroma
+            add  a,a
+            add  a,a
+            add  a,a
+            add  a,a                ; el papel va en los bits 7-4
+            ld   b,a
+            ld   a,(cur_attr)
+            and  08Fh               ; conserva tinta y el brillo del papel
+            or   b
+            ld   (cur_attr),a
+            ret
+
+ansi2chroma:                        ; A = color ANSI (0-7) -> color del hardware
+            ld   hl,ansi_ctab
+            ld   e,a
+            ld   d,0
+            add  hl,de
+            ld   a,(hl)
+            ret
+ansi_ctab:  defb 0,2,4,6,1,3,5,7    ; negro rojo verde amarillo azul magenta cian blanco
+
 ?cost:      ld   a,0FFh              ; la escritura a pantalla nunca bloquea
             ret
 
@@ -171,6 +313,17 @@ print_glyph:                        ; A = carácter (20h..7Fh) en el cursor
             call char_addr          ; HL = direccion en pantalla de (cur_row,cur_col)
             pop  af
             ld   (hl),a
+; CPM3_SD81 (color): y el atributo, en la posicion equivalente. ATTR y el
+; DFILE tienen la MISMA geometria (1+24*81), asi que basta con sumarle
+; una constante a la direccion del caracter.
+            push af
+            push hl
+            ld   de,ATTR_OFF
+            add  hl,de
+            ld   a,(cur_attr)
+            ld   (hl),a
+            pop  hl
+            pop  af
             ld   a,(cur_col)
             inc  a
             cp   SCRW
@@ -232,11 +385,38 @@ scroll:     ld   hl,DFILE+1+ROWSTRIDE
             ld   de,DFILE+1+ROWSTRIDE*(SCRH-1)+1
             ld   bc,ROWSTRIDE-1
             ldir
+
+; CPM3_SD81 (color): y lo mismo con los atributos. Sin esto, el texto
+; sube pero los colores se quedan quietos, asi que cada linea cambia de
+; color al desplazarse -- la pantalla se "estropea" en cuanto hay
+; scroll.
+;
+; La linea nueva se rellena con cur_attr, no con ATTR_SCREEN: es lo que
+; hace un terminal de verdad, el hueco que aparece al desplazar toma el
+; color con el que se esta escribiendo.
+            ld   hl,ATTR+1+ROWSTRIDE
+            ld   de,ATTR+1
+            ld   bc,ROWSTRIDE*(SCRH-1)
+            ldir
+            ld   a,(cur_attr)
+            ld   hl,ATTR+1+ROWSTRIDE*(SCRH-1)
+            ld   (hl),a
+            ld   de,ATTR+1+ROWSTRIDE*(SCRH-1)+1
+            ld   bc,ROWSTRIDE-1
+            ldir
             ret
 
 cls:        ld   hl,DFILE
             ld   (hl),' '
             ld   de,DFILE+1
+            ld   bc,1+ROWSTRIDE*SCRH-1
+            ldir
+; CPM3_SD81 (color): los atributos, igual. Si no, al borrar la pantalla
+; los colores viejos se quedan puestos y el texto nuevo sale sobre ellos.
+            ld   a,(cur_attr)
+            ld   hl,ATTR
+            ld   (hl),a
+            ld   de,ATTR+1
             ld   bc,1+ROWSTRIDE*SCRH-1
             ldir
             xor  a
@@ -508,6 +688,10 @@ enter_used: defs 1
 blink:      defs 1
 cursor_on:  defs 1
 term_state: defs 1
+cur_attr:   defb ATTR_SCREEN     ; color con el que se imprime ahora
+ansi_n:     defs 1               ; parametro ANSI que se acumula
+ansi_par:   defs 4               ; parametros ya cerrados
+ansi_cnt:   defs 1               ; cuantos hay
 mods_seen:  defs 1
 ctrl_prefix: defs 1
 cursor_save: defs 1
