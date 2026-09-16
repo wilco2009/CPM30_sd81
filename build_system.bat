@@ -13,7 +13,7 @@ REM El emulador arranca su propia copia, no esta. Copiarla a mano se
 REM olvida, y entonces se prueba un binario viejo creyendo que es el
 REM nuevo -- paso una vez y costo un diagnostico entero (se dio por
 REM bueno un arreglo que en realidad venia de la version anterior).
-set SD81DIR=C:\ClaudeCode\Eightyone2\EightyOne\SD81
+set SD81DIR=C:\ClaudeCode\Eightyone2\EightyOne\SD81\TOOLS\CPMPLUS
 if not exist "%SD81DIR%\" (
   echo [AVISO] no existe %SD81DIR% -- system.bin NO copiado al emulador
   echo [OK] system.bin

@@ -1,0 +1,24 @@
+[mPRUEBA ANSI + JUEGO DE 256 CARACTERES
+
+TINTA  [31mROJO [32mVERD [33mAMAR [34mAZUL [35mMAGE [36mCIAN [37mBLAN [m
+BRILLO [1;31mROJO [1;32mVERD [1;33mAMAR [1;34mAZUL [1;35mMAGE [1;36mCIAN [1;37mBLAN [m
+PAPEL  [30;41mROJO[m [30;42mVERD[m [30;43mAMAR[m [30;44mAZUL[m [30;45mMAGE[m [30;46mCIAN[m [30;47mBLAN[m 
+
+JUEGO DE CARACTERES ($20-$FF):
+  20   !"#$%&'()*+,-./
+  30  0123456789:;<=>?
+  40  @ABCDEFGHIJKLMNO
+  50  PQRSTUVWXYZ[\]^_
+  60  `abcdefghijklmno
+  70  pqrstuvwxyz{|}~
+  80  €‚ƒ„…†‡‰‹
+  90  ‘’“”•–—™›
+  A0   ΅Ά£¤¥¦§¨©ª«¬­®―
+  B0  °±²³΄µ¶·ΈΉΊ»Ό½ΎΏ
+  C0  ΐΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟ
+  D0  ΠΡÒΣΤΥΦΧΨΩΪΫάέήί
+  E0  ΰαβγδεζηθικλμνξο
+  F0  πρςστυφχψωϊϋόύώÿ
+
+[mFIN
+
