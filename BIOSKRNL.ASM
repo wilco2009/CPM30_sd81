@@ -101,7 +101,9 @@ ccp	equ 0100h	; Console Command Processor gets loaded into the TPA
 ; 	dseg	; this part can be banked
 
 boot:
+
 	lxi sp,boot$stack
+
 	mvi c,15	; initialize all 16 character devices
 c$init$loop:
 	push b
@@ -110,7 +112,9 @@ c$init$loop:
 	dcr c
 	jp c$init$loop
 
+
 	call ?init	; perform any additional system initialization
+
 			; and print signon message
 
 	lxi b,16*256+0
@@ -144,6 +148,8 @@ d$init$next:
 	inr c
 	dcr b
 	jnz d$init$loop	; and loop for each drive
+
+
 	jmp boot$1
 
 ; 	cseg	; following in resident memory
@@ -191,6 +197,8 @@ bioskrnl$boot$save equ $
 
 boot$1:
 	call set$jumps
+
+
 	call ?ldccp				; fetch CCP for first time
 	jmp ccp
 
@@ -927,6 +935,7 @@ sector$msg	db	', S-',0
 ; debajo de $E090 (el mas bajo es olog, scb$pg+090h) -- pero la razon es
 ; otra: esta libre, no "detras del SCB".
 
+bioskrnl$end$save equ $	; parentesis de org (ver el cierre, al final)
 	org 0E064h
 
 @cbnk	db	0		; bank for processor operations
@@ -936,9 +945,13 @@ sector$msg	db	', S-',0
 ; de este fichero (SCB.ASM no ocupa bytes, son puros "equ"; bank.z80,
 ; move.z80, diskio.z80, drvtbl.z80, chario.z80, init.z80) empezaria a
 ; colocarse en banco 7 a partir de $E065, chocando con ATTR_val/
-; DFILE_val/FONT_ADDR. $62E9 es donde continuaba la secuencia antes de
-; mover boot$1/@cbnk (ahi es donde caia dup_switcher, bank.z80).
+; DFILE_val/FONT_ADDR.
+;
+; CPM3_SD81: la direccion de vuelta era "$62E9" escrita a mano. Dejo de
+; ser valida en cuanto start: crecio, y se solapo con el "org 062E9h"
+; gemelo de bank.z80 -- dos org absolutos al mismo sitio, que zmac no
+; denuncia y solo caza checkimg.py. Ahora se calcula sola.
 
-	org 062E9h
+	org bioskrnl$end$save
 
 	end

@@ -47,10 +47,16 @@
 ;  desestabilizaba el ensamblado en varias pasadas (mismo sintoma que
 ;  el "bdose2" de BDOS.ASM: nada relacionado a simple vista dejaba de
 ;  funcionar -- aqui, ni siquiera se llegaba a entrar en ?bank).
-;  "org 062E9h" al final para retomar la secuencia normal del fichero
+;  "org bank$hi$save" al final para retomar la secuencia del fichero
 ;  (dup_switcher etc.) exactamente donde continuaria si este bloque no
 ;  existiera -- direccion confirmada en el .lst de antes de este bug.
 ; ---------------------------------------------------------------------
+; CPM3_SD81: parentesis de org. El cierre de mas abajo era "org 062E9h"
+; a pelo -- la direccion donde continuaba la secuencia cuando se escribio
+; esto. En cuanto start: crecio, esa direccion dejo de ser el final del
+; bloque anterior y se solapo con el "org 062E9h" gemelo de BIOSKRNL.ASM;
+; lo caza checkimg.py, no zmac. Ahora se calcula sola.
+bank$hi$save equ $
             org  0F7A4h
 
 bank$retaddr: ds 2               ; direccion de retorno real del
@@ -136,7 +142,7 @@ mv$len:     ds   1              ; longitud del trozo actual (1-128)
 
             ds   0F8C0h-$        ; guarda: detras empieza la fuente (cod 24)
 
-            org  062E9h
+            org  bank$hi$save   ; cierra el parentesis
 
 ; ---------------------------------------------------------------------
 ;  Tabla de saltos del BIOS -- movida aqui desde BIOSKRNL.ASM (ver la

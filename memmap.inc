@@ -284,3 +284,28 @@ BD_A         equ 0F7A3h   ; valor devuelto en A
 ;  Ahora sale de aqui y los dos la derivan.
 ; ---------------------------------------------------------------------
 SCB_PAGE     equ 0FE00h
+
+
+; ---------------------------------------------------------------------
+;  Configuracion de la FPGA (video y modo). Estaba en init.z80, pero
+;  TODA la configuracion inicial de la FPGA se hace ahora en "start:"
+;  (system.z80), y start: se ensambla ANTES que init.z80 -- asi que los
+;  equates tienen que vivir aqui, que es lo primero que se incluye.
+; ---------------------------------------------------------------------
+DFILE_OVR      equ 2096
+DFILE_OVR_EN   equ 2098
+DFILE_val      equ 0E899h
+ATTR_OVR       equ 2059
+ATTR_OVR_EN    equ 2061
+ATTR_val       equ 0E100h
+ATTR_SCREEN    equ 01Eh        ; papel azul ($1), tinta amarilla brillante
+CHROMA_PORT    equ 07FEFh      ; registro de modo Chroma (SD81.v:427)
+CHROMA_val     equ 031h        ; color_enable + color_mode + borde azul
+FONT_I         equ 0D8h
+FONT_ADDR      equ 0D800h        ; la tabla la genera font_image.z80
+ROWS           equ 24
+COLS           equ 80
+DataPort       equ 0A7h
+ClkPort        equ 0AFh
+CMD_chars256   equ 041h        ; SEL_256CHARS = 65
+CMD_fullpaging equ 01Dh        ; 29

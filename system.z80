@@ -33,7 +33,28 @@
 ;  (init.z80): esa vive por encima de $8000 y no se puede llamar
 ;  todavia -- justo el problema que este bloque resuelve.
 ; -----------------------------------------------------------------------
-start:      ld   a,013h          ; comando MCU: MC45 ON (48K mode)
+; CPM3_SD81: "di" y NMI off LO PRIMERO DE TODO, antes incluso de tocar
+; MC45. Estaban en ?init, que se ejecuta mucho despues:
+;
+;   start: ($6000)  MC45 ON -> mc45_ext67 -> jp ?boot
+;   ?boot:          zona duplicada, $D5xx   <-- ya por encima de $8000
+;   boot:           call ?cinit x16
+;   ?init:          <-- aqui estaba el primer "di"
+;
+; O sea que saltabamos a la zona alta y haciamos las dieciseis
+; inicializaciones de dispositivos de caracter con las interrupciones y
+; el NMI todavia vivos, y con MC45 recien cambiado bajo los pies de la
+; ROM. En modo SLOW la interrupcion del ZX81 llega ~50 veces por segundo:
+; en hardware real es casi seguro que caiga una ahi. El emulador puede no
+; reproducirlo nunca.
+;
+; Los tests de video (vidtest*.z80), que si funcionan en hardware, hacen
+; "di" inmediatamente. Esta era la diferencia.
+start:      di
+            xor  a
+            out  (0FDh), a       ; NMI off
+
+            ld   a,013h          ; comando MCU: MC45 ON (48K mode)
             call boot_mcu_send
 
             ; mc45_ext67: MC45 por defecto solo cubre los bloques 4 y 5
@@ -53,7 +74,98 @@ start:      ld   a,013h          ; comando MCU: MC45 ON (48K mode)
             ld   a,170
             ld   (2062),a
 
+; --- configuracion de la FPGA: video y modo -------------------------
+;
+; TODO esto estaba en ?init, que vive por encima de $8000. La maquina
+; arranca sin poder ejecutar ahi, asi que dejarlo arriba hacia que la
+; pantalla dependiera de un salto que todavia no habiamos verificado.
+; Aqui abajo, cuando saltemos a ?boot la FPGA ya estara configurada y
+; cualquier fallo posterior sera VISIBLE.
+;
+; OJO con el orden, que no es libre:
+;   - el mapeo de los bloques 0-2 quita la ROM y las variables del
+;     BASIC, asi que despues ya no se puede pintar por el D_FILE
+;   - "ld (2056),a" CIERRA la ventana MMIO: nada de MMIO detras
+
+            ld   a, FONT_I
+            ld   i, a
+
+            ld   a, (8 << 3)  | 0
+            out  (0E7h), a
+            ld   a, (9 << 3)  | 1
+            out  (0E7h), a
+            ld   a, (10 << 3) | 2
+            out  (0E7h), a
+
+            ld   hl, DFILE_val
+            ld   (DFILE_OVR), hl
+            ld   a, 170
+            ld   (DFILE_OVR_EN), a
+            ld   hl, ATTR_val
+            ld   (ATTR_OVR), hl
+            ld   a, 170
+            ld   (ATTR_OVR_EN), a
+
+            ld   bc, CHROMA_PORT
+            ld   a, CHROMA_val
+            out  (c), a
+
+            ld   a, 174
+            ld   (2045), a
+            xor  a
+            ld   (2094), a
+            ld   (2095), a
+
+            xor  a
+            ld   (2056), a       ; cierra la ventana MMIO
+
+            ld   a, CMD_chars256
+            call boot_mcu_send
+            call boot_clear_screen
+            call boot_clear_attrs
+            ld   a, CMD_fullpaging
+            call boot_mcu_send
+
             jp   ?boot           ; BASIC "RAND USR 24576" entra aqui
+
+boot_clear_screen:
+            ld   hl, DFILE_val+1
+            ld   b, ROWS
+ics_row:    push bc
+            ld   c, COLS
+            ; codigo 32 (espacio ASCII), no 0: coincide con "cls"
+            ; (chario.z80) y con la fuente ASCII que se cargara desde SD.
+            ; Ademas deja libres los 256 bytes de la tabla de fuentes que
+            ; corresponden a los codigos 0-31 (nunca imprimibles: ?co los
+            ; filtra con "cp 20h / ret c"), como reserva de memoria comun
+            ; -- ver memory_map.md.
+            ld   a, 32
+ics_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ics_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ics_row
+            ret
+
+boot_clear_attrs:
+            ld   hl, ATTR_val+1
+            ld   b, ROWS
+ica_row:    push bc
+            ld   c, COLS
+            ld   a, ATTR_SCREEN
+ica_col:    ld   (hl), a
+            inc  hl
+            dec  c
+            jr   nz, ica_col
+            ld   (hl), 0
+            inc  hl
+            pop  bc
+            djnz ica_row
+            ret
+
 
 boot_mcu_send:
             ld   b,a
