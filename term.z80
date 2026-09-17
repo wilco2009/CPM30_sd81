@@ -1,0 +1,234 @@
+; =====================================================================
+;  TERM.Z80 - terminal minimo sobre el dispositivo logico AUX, con
+;  volcado opcional a fichero.
+;
+;  No sabe nada de red: habla con AUX: y punto. Quien decide que hay al
+;  otro lado es el "DEVICE AUX:=NET" que se haya hecho antes. Por eso
+;  esto mismo valdria contra un puerto serie de verdad el dia que lo
+;  haya -- y por eso sirve de prueba del driver: todo lo que teclees
+;  recorre auxout -> @aovec -> ?co con B=1 -> net_write -> comando 67.
+;
+;  Uso:
+;      DEVICE AUX:=NET
+;      TERM            <- terminal a secas
+;      TERM LOG.BIN    <- ademas, guarda TODO lo que llega por AUX
+;
+;  Se sale con la tecla de EXITKEY (ver abajo).
+;
+;  EL TECLADO SE MIRA EN CADA VUELTA, Y ESO NO ES NEGOCIABLE
+;
+;  La primera version vaciaba AUX entera antes de mirar el teclado,
+;  razonando que los datos llegan a rafagas y el teclado puede esperar.
+;  Es falso: pintar 80 columnas en un Z80 a 3,25 MHz es mas lento de lo
+;  que escupe una BBS, asi que AUX no se vacia nunca y el teclado no se
+;  lee JAMAS. Sintoma: la BBS pregunta algo, no puedes contestar, y
+;  acaba colgando por inactividad.
+;
+;  Asi que una vuelta = como mucho un byte de AUX + una mirada al
+;  teclado. Cuesta un escaneo de teclado por caracter recibido, que a
+;  la velocidad de una BBS no se nota.
+;
+;  EL VOLCADO
+;
+;  Guarda los bytes crudos, sin filtrar ni traducir: es para ver que
+;  secuencias de escape manda la otra punta y cuales no entendemos. El
+;  nombre sale del FCB que el propio CP/M ya ha rellenado en $005C con
+;  el primer argumento, asi que no hay que parsear nada.
+;
+;  AVISO: escribir en disco lleva su tiempo, y mientras tanto no se lee
+;  de AUX. El bufer del MCU son 2 KB, asi que en una rafaga larga se
+;  pueden perder bytes -- justo despues de un registro escrito. Para
+;  diagnosticar secuencias de escape da igual, pero no te fies del
+;  volcado como copia fiel de una descarga.
+;
+;  POR QUE NO SE USA LA FUNCION 2 PARA IMPRIMIR
+;
+;  La 2 expande tabuladores y mira si has pulsado ^S. Las dos cosas
+;  estropean una sesion ANSI: el tabulador descoloca el arte y el ^S
+;  congela la pantalla mientras la BBS sigue mandando. La 6 (E/S directa
+;  de consola) no hace ninguna de las dos.
+;
+;  El pero de la 6 es que reserva E = 0FDh, 0FEh y 0FFh para pedir
+;  entrada, asi que esos tres codigos no se pueden imprimir con ella.
+;  Son raros pero no imposibles (el arte CP437 usa la zona alta), asi
+;  que para esos tres se cae a la funcion 2, donde ni el tabulador ni el
+;  ^S aplican porque ninguno de los tres es uno de ellos.
+; =====================================================================
+
+BDOS        equ  0005h
+FCB         equ  005Ch      ; el CP/M ya ha metido aqui el primer argumento
+
+F_RESET     equ  0          ; volver al CCP
+F_CONOUT2   equ  2          ; salida de consola, solo para 0FDh-0FFh
+F_AUXIN     equ  3          ; leer de AUX (bloquea)
+F_AUXOUT    equ  4          ; escribir en AUX (bloquea hasta que acepte)
+F_CONIO     equ  6          ; E/S directa de consola
+F_AUXIST    equ  7          ; estado de entrada de AUX (CP/M 3)
+F_PRINT     equ  9          ; imprimir cadena terminada en el dolar
+F_CLOSE     equ  16
+F_DELETE    equ  19
+F_WRITE     equ  21
+F_MAKE      equ  22
+F_DMA       equ  26
+
+CIO_STAT    equ  0FEh       ; ...E=0FEh -> 0FFh si hay tecla
+CIO_IN      equ  0FDh       ; ...E=0FDh -> leer tecla (bloquea)
+
+; Tecla de salida. ^] es el estandar de telnet, pero si en el teclado
+; del ZX81 no hay forma comoda de teclearla, cambia este valor por algo
+; que si se pueda -- teniendo en cuenta que esa tecla deja de poder
+; mandarse a la BBS.
+EXITKEY     equ  01Dh       ; Ctrl-]
+
+            org  0100h
+
+start:      ld   de,msg_on
+            ld   c,F_PRINT
+            call BDOS
+            call log_open
+
+; ---------------------------------------------------------------------
+;  Bucle principal. Las dos direcciones se atienden por sondeo, nunca
+;  bloqueando: si se llamara a AUXIN a pelo, el terminal se quedaria
+;  dentro esperando a la BBS y no leeria el teclado. Para eso esta la
+;  funcion 7, que CP/M 3 anadio justamente para esto.
+; ---------------------------------------------------------------------
+loop:       ld   c,F_AUXIST         ; hay algo de la BBS?
+            call BDOS
+            or   a
+            jr   z,do_kbd
+            ld   c,F_AUXIN          ; si: traerlo (ya sabemos que no bloquea)
+            call BDOS
+            ld   (rxbyte),a
+            ld   e,a
+            call conout
+            ld   a,(rxbyte)
+            call log_byte
+            ; y AHORA al teclado, sin atajos. Ver la cabecera.
+
+do_kbd:     ld   c,F_CONIO          ; hay tecla?
+            ld   e,CIO_STAT
+            call BDOS
+            or   a
+            jr   z,loop
+            ld   c,F_CONIO          ; si: leerla
+            ld   e,CIO_IN
+            call BDOS
+            cp   EXITKEY
+            jr   z,done
+            ld   e,a
+            ld   c,F_AUXOUT         ; y mandarla por el tubo
+            call BDOS
+            jr   loop
+
+done:       call log_close
+            ld   de,msg_off
+            ld   c,F_PRINT
+            call BDOS
+            ld   c,F_RESET
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+;  conout - imprime E sin tocarlo. Ver la nota de la cabecera.
+; ---------------------------------------------------------------------
+conout:     ld   a,e
+            cp   CIO_IN             ; 0FDh, 0FEh y 0FFh no caben en la 6
+            jr   nc,co_slow
+            ld   c,F_CONIO
+            jp   BDOS
+co_slow:    ld   c,F_CONOUT2
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+;  log_open - si hay nombre en el FCB, crea el fichero. Si no lo hay, o
+;  si no se puede crear, se sigue sin volcado: el terminal funciona
+;  igual y no es cuestion de abortar la sesion por esto.
+; ---------------------------------------------------------------------
+log_open:   ld   a,(FCB+1)
+            cp   020h               ; espacio: no habia argumento
+            ret  z
+            ld   de,FCB             ; borrar el anterior, si lo hubiera
+            ld   c,F_DELETE
+            call BDOS
+            ld   de,FCB
+            ld   c,F_MAKE
+            call BDOS
+            inc  a                  ; 0FFh = no se pudo crear
+            jr   z,log_err
+            ld   a,1
+            ld   (logging),a
+            ret
+log_err:    xor  a
+            ld   (logging),a
+            ld   de,msg_nolog
+            ld   c,F_PRINT
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+;  log_byte - mete A en el bufer; cuando se llenan los 128 B, lo escribe.
+; ---------------------------------------------------------------------
+log_byte:   ld   b,a
+            ld   a,(logging)
+            or   a
+            ret  z
+            ld   a,(logcnt)
+            ld   hl,logbuf
+            ld   e,a
+            ld   d,0
+            add  hl,de
+            ld   (hl),b
+            inc  a
+            ld   (logcnt),a
+            cp   128
+            ret  c
+            ; el registro esta lleno: a disco
+
+log_flush:  xor  a
+            ld   (logcnt),a
+            ld   de,logbuf          ; el DMA se pone en CADA escritura: el
+            ld   c,F_DMA            ; BDOS lo mueve por su cuenta
+            call BDOS
+            ld   de,FCB
+            ld   c,F_WRITE
+            call BDOS
+            or   a
+            ret  z
+            jp   log_err            ; disco lleno o error: apagar el volcado
+
+; ---------------------------------------------------------------------
+;  log_close - rellena el ultimo registro con ^Z y cierra.
+; ---------------------------------------------------------------------
+log_close:  ld   a,(logging)
+            or   a
+            ret  z
+            ld   a,(logcnt)
+            or   a
+            jr   z,lc_shut          ; el ultimo registro salio justo
+            ld   hl,logbuf
+            ld   e,a
+            ld   d,0
+            add  hl,de
+            ld   a,128
+            sub  e
+            ld   b,a                ; B = lo que falta para los 128
+lc_pad:     ld   (hl),01Ah
+            inc  hl
+            djnz lc_pad
+            ld   a,128
+            ld   (logcnt),a
+            call log_flush
+lc_shut:    ld   de,FCB
+            ld   c,F_CLOSE
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+rxbyte:     defb 0                  ; el byte que se acaba de recibir
+logging:    defb 0                  ; distinto de 0 si el volcado esta activo
+logcnt:     defb 0                  ; bytes ya metidos en el registro
+logbuf:     defs 128
+
+msg_on:     defb 13,10,'TERM - Ctrl-] para salir',13,10,'$'
+msg_off:    defb 13,10,'TERM: fin.',13,10,'$'
+msg_nolog:  defb 13,10,'TERM: sin volcado.',13,10,'$'
+
+            end  start

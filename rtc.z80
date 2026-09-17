@@ -426,6 +426,6 @@ rtc_year:   defs 2
 rtc_month:  defs 1
 rtc_day:    defs 1
 
-            ds   LDR_BASE-$      ; guarda: detras, el cargador
+            ds   NETORG-$        ; guarda: detras, net.z80
 
             org  rtc$save

@@ -1,0 +1,237 @@
+; =====================================================================
+;  net.z80 - dispositivo fisico NET: puente de red (BBS/telnet).
+;
+;  El Z80 ve un flujo de bytes, como si tuviera un puerto serie con un
+;  modem delante: no sabe nada de WiFi, sockets ni direcciones. El
+;  destino se fija con comandos AT (ATDT host:puerto), que viajan por
+;  dentro del propio flujo. Ver claude/planning/net_bridge_emulator.md y
+;  telnet_esp32_bridge.md en el repo del SD81-Booster.
+;
+;  Se engancha como un dispositivo fisico mas de la tabla @ctbl, el
+;  numero 1 (la consola es el 0). Asi "DEVICE AUX:=NET" lo asigna al
+;  dispositivo logico AUX y auxin/auxout/auxist/auxost de BIOSKRNL.ASM
+;  llegan aqui solos, por el mecanismo de vectores de CP/M 3. No hace
+;  falta tocar esas rutinas: ya estaban bien.
+;
+;  COMANDOS MCU
+;
+;    66 (0x42) NET_READ   Z80: max          MCU: count, data[count],
+;                                                avail, status
+;    67 (0x43) NET_WRITE  Z80: count, data  MCU: accepted, status
+;
+;  status: 0 sin conexion, 1 conectando, 2 conectado, 3 error.
+;
+;  Se ignora a proposito: un BIOS de CP/M 3 no tiene donde decir "se ha
+;  caido la linea", y el modelo de modem ya lo resuelve -- el programa
+;  se entera por el NO CARRIER que llega como datos, igual que con un
+;  modem de verdad.
+;
+;  LOS DOS BUFERES, Y POR QUE
+;
+;  ?ci entrega UN byte por llamada. Hacer un comando MCU entero (con su
+;  handshake byte a byte) por cada caracter seria carisimo: un BBS a
+;  2400 baudios son 240 bytes/s, o sea 240 comandos por segundo. Con el
+;  bufer de entrada son ~2.
+;
+;  El de salida esta por otra razon. ?cost existe para que un programa
+;  pueda preguntar si puede escribir sin bloquearse, y tener asi un
+;  bucle que atiende las tres cosas sin pararse en ninguna:
+;
+;      call ?cist  -> pintar lo que entra
+;      call ?cost  -> enviar lo que haya
+;      call const  -> mirar el teclado
+;
+;  Si ?cost mintiera diciendo siempre listo, ?co se quedaria dentro
+;  reintentando cuando el bufer del MCU estuviera lleno, y mientras
+;  tanto el programa dejaria de leer lo que entra y de mirar el teclado.
+;  En un terminal interactivo da igual (nadie llena 2 KB tecleando),
+;  pero en una transferencia de ficheros se pierden datos o el otro
+;  extremo da timeout.
+;
+;  Con el bufer local, ?cost dice la verdad: hay hueco o no lo hay.
+;
+;  IMPORTANTE: ?co SIEMPRE intenta enviar, no acumula esperando un
+;  flush. Asi, en el caso normal el byte sale en el acto y no se queda
+;  nada colgado si el programa deja de llamar.
+;
+;  sd_clk/mcu_send/mcu_recv son las de sddisk.z80, sin cambios; por eso
+;  este fichero va DESPUES de diskio.z80 en system.z80.
+; =====================================================================
+
+; net.z80 no cabe en el tramo apretado $8000-$89FF donde va el resto del
+; XIOS, asi que se muda igual que hizo rtc.z80. Ver la nota en memmap.inc.
+net$save    equ $
+
+            org  NETORG
+
+CMD_NET_RD  equ  66
+CMD_NET_WR  equ  67
+NET_IBUFSZ  equ  128
+NET_OBUFSZ  equ  128
+
+; ---------------------------------------------------------------------
+;  net_read  - lee hasta B bytes en (HL). Devuelve B = leidos.
+;  net_write - envia B bytes desde (HL). Devuelve B = aceptados.
+;
+;  Las dos pueden hacer menos de lo pedido, y hay que contar con ello:
+;  los datos llegan a rafagas y el bufer de salida del MCU es finito.
+;
+;  Las tres rutinas del MCU preservan DE, HL y B; destruyen A y C.
+;
+;  OJO CON C: es el reloj del handshake. sd_clk lo carga y mcu_send/
+;  mcu_recv lo invierten con "cpl" en CADA byte. Guardar algo ahi no solo
+;  pierde el valor: desincroniza todas las esperas de toggle que vengan
+;  detras, y la trama entera se va al garete a partir de ese punto. Se usa
+;  D, que si sobrevive.
+;
+;  OJO CON A: no sobrevive a mcu_send -- sale valiendo ClkPort XOR C. Hay
+;  que recargarlo antes de cualquier comprobacion posterior. mcu_recv es
+;  distinto: ahi A es el valor devuelto y si vale.
+; ---------------------------------------------------------------------
+net_read:   push hl
+            ld   d,b                ; D = max
+            call sd_clk
+            ld   a,CMD_NET_RD
+            call mcu_send
+            ld   a,d
+            call mcu_send           ; max
+            call mcu_recv
+            ld   b,a                ; count
+            ld   d,a                ; copia a salvo (C es el reloj)
+            or   a
+            jr   z,nr_tail
+nr_loop:    call mcu_recv
+            ld   (hl),a
+            inc  hl
+            djnz nr_loop
+nr_tail:    call mcu_recv           ; avail (pendientes tras esta lectura;
+                                     ; no nos hace falta: ya se pide el
+                                     ; bufer entero de una)
+            call mcu_recv           ; status (se ignora, ver cabecera)
+            ld   b,d
+            pop  hl
+            ret
+
+net_write:  call sd_clk
+            ld   a,CMD_NET_WR
+            call mcu_send
+            ld   a,b
+            call mcu_send           ; count
+            ld   a,b                ; RECARGAR: mcu_send se ha comido A
+            or   a
+            jr   z,nw_tail
+nw_loop:    ld   a,(hl)
+            call mcu_send
+            inc  hl
+            djnz nw_loop
+nw_tail:    call mcu_recv
+            ld   b,a                ; aceptados
+            call mcu_recv           ; status
+            ret
+
+; ---------------------------------------------------------------------
+;  net_fill - si el bufer de entrada esta vacio, pide mas al MCU.
+; ---------------------------------------------------------------------
+net_fill:   ld   a,(net_icnt)
+            or   a
+            ret  nz                 ; aun queda: no molestar al MCU
+            ld   hl,net_ibuf
+            ld   b,NET_IBUFSZ
+            call net_read           ; B = leidos de verdad
+            ld   a,b
+            ld   (net_icnt),a
+            ld   hl,net_ibuf
+            ld   (net_iptr),hl
+            ret
+
+; ---------------------------------------------------------------------
+;  net_flush - intenta soltar el bufer de salida. Lo que el MCU no
+;  acepte se compacta al principio y se queda para la proxima.
+; ---------------------------------------------------------------------
+net_flush:  ld   a,(net_ocnt)
+            or   a
+            ret  z
+            ld   b,a
+            ld   hl,net_obuf
+            call net_write          ; B = aceptados
+            ld   a,(net_ocnt)
+            sub  b
+            ld   (net_ocnt),a
+            ret  z                  ; salio todo
+            ld   c,a                ; quedan C bytes por enviar
+            ld   hl,net_obuf
+            ld   e,b                ; ...que empiezan tras los aceptados
+            ld   d,0
+            add  hl,de
+            ld   de,net_obuf
+            ld   b,0
+            ldir
+            ret
+
+; ---------------------------------------------------------------------
+;  Las cuatro entradas del dispositivo.
+; ---------------------------------------------------------------------
+net_cist:                            ; A=0FFh si hay byte, 0 si no
+            call net_fill
+            ld   a,(net_icnt)
+            or   a
+            ret  z
+            ld   a,0FFh
+            ret
+
+net_ci:                              ; A = byte (bloqueante, como manda ?ci)
+            call net_fill
+            ld   a,(net_icnt)
+            or   a
+            jr   z,net_ci           ; nada todavia: seguir esperando
+            dec  a
+            ld   (net_icnt),a
+            ld   hl,(net_iptr)
+            ld   a,(hl)
+            inc  hl
+            ld   (net_iptr),hl
+            ret
+
+net_cost:                            ; A=0FFh si se puede escribir
+            call net_flush
+            ld   a,(net_ocnt)
+            cp   NET_OBUFSZ
+            ld   a,0
+            ret  nc                 ; bufer local lleno: NO listo
+            ld   a,0FFh
+            ret
+
+net_co:                              ; C = byte a enviar
+            ld   a,c
+            ld   (net_ochar),a      ; a salvo: net_flush pisa C (el reloj)
+nco_try:    ld   a,(net_ocnt)
+            cp   NET_OBUFSZ
+            jr   c,nco_add
+            call net_flush          ; lleno: intentar hacer sitio
+            jr   nco_try            ; si sigue lleno, esperar: ?co bloquea
+                                     ; por contrato. Quien no quiera eso,
+                                     ; que pregunte antes con ?cost.
+nco_add:    ld   hl,net_obuf
+            ld   e,a
+            ld   d,0
+            add  hl,de
+            ld   a,(net_ochar)
+            ld   (hl),a
+            ld   a,(net_ocnt)
+            inc  a
+            ld   (net_ocnt),a
+            jp   net_flush          ; y sale ya, sin esperar a nadie
+
+net_cinit:  ret                      ; la velocidad la fija el otro extremo
+
+; ---------------------------------------------------------------------
+net_icnt:   defb 0                   ; bytes pendientes en el bufer de entrada
+net_iptr:   defw net_ibuf            ; siguiente byte a servir
+net_ocnt:   defb 0                   ; bytes pendientes de salir
+net_ochar:  defb 0                   ; el byte que esta metiendo ?co
+net_ibuf:   defs NET_IBUFSZ
+net_obuf:   defs NET_OBUFSZ
+
+            ds   LDR_BASE-$      ; guarda: detras, el cargador
+
+            org  net$save

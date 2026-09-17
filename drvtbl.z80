@@ -77,7 +77,7 @@ dpb_ram:    defw 64         ; SPT
             defb 0          ; PSH
             defb 0          ; PSM
 
-            ds   CTBLORG-$       ; guarda: detras viene @ctbl (chario.z80)
+            ds   BD_RT-$         ; guarda: detras, el estado de biosd
 
             org  drvtbl$save
 
@@ -253,6 +253,6 @@ dph_e:      defw 0
             defw 0FFFFh         ; HASH:   sin hash de directorio
             defb 0
 
-            ds   0F704h-$        ; guarda: detras, ldccp_real (init.z80)
+            ds   CTBLORG-$       ; guarda: detras viene @ctbl (chario.z80)
 
             org  drvtbl$dph$save

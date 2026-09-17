@@ -217,10 +217,13 @@ DTBLORG      equ 0F618h
 ;  dio por bueno porque la RUTINA "devtbl" estaba en comun -- pero lo que
 ;  el programa lee no es la rutina, es la TABLA que devuelve.
 ;
-;  Son 9 bytes (6 de nombre + modo + baudios + terminador) y de solo
-;  lectura. Caben en el hueco que quedaba detras de los DPB.
+;  Con dos dispositivos (CON y NET, ver net.z80) son 17 bytes: 8 por
+;  dispositivo (6 de nombre + modo + baudios) mas el terminador. Ya no
+;  caben en los 9 bytes que quedaban detras de los DPB, asi que pasa al
+;  hueco de 29 que hay detras de los DPH ($F6E7-$F703). De rebote, los
+;  DPB pasan a rellenar hasta BD_RT en lugar de hasta aqui.
 ; ---------------------------------------------------------------------
-CTBLORG      equ 0F797h
+CTBLORG      equ 0F6E7h
 
 ; ---------------------------------------------------------------------
 ;  rtc.z80, fuera del hueco apretado del XIOS.
@@ -234,6 +237,17 @@ CTBLORG      equ 0F797h
 ;  siguiente.
 ; ---------------------------------------------------------------------
 RTCORG       equ 0CE00h
+
+; ---------------------------------------------------------------------
+;  net.z80, por el mismo motivo que el reloj: no cabe en el tramo
+;  $8000-$89FF. Son unos 420 bytes, y 256 de ellos son los dos buferes
+;  de 128 -- el precio de no hacer un comando MCU por cada caracter.
+;
+;  Va detras del reloj, en los 727 bytes que quedaban entre el final de
+;  rtc.z80 ($D029) y el cargador. Guardas encadenadas: rtc cierra con
+;  "ds NETORG-$" y net.z80 con "ds LDR_BASE-$".
+; ---------------------------------------------------------------------
+NETORG       equ 0D030h
 
 ; ---------------------------------------------------------------------
 ;  Estado de biosd (bank.z80), el envoltorio de las entradas de disco.

@@ -56,24 +56,50 @@ chario$save equ $            ; ver el "org" de cierre mas abajo
 
             org  CTBLORG
 
+; Dispositivo 0: la pantalla + el teclado del ZX81.
 @ctbl:      defb 'CON   '
             defb mb$in$out
             defb baud$none
+
+; Dispositivo 1: el puente de red (net.z80). mb$serial porque por el
+; canal viajan los comandos AT, como con un modem de verdad. Sin
+; baudios: la velocidad la fija el otro extremo, no hay UART que
+; programar, asi que DEVICE NET:[9600] no tiene nada que hacer.
+            defb 'NET   '
+            defb mb$in$out+mb$serial
+            defb baud$none
+
             defb 0                  ; terminador de tabla
 
-; Los 4 bytes que quedaban aqui son el estado comun de biosd (bank.z80):
-; Ver la nota en memmap.inc.
-            ds   BD_RT-$
+            ds   0F704h-$        ; guarda: detras, ldccp_real (init.z80)
+
+; El estado comun de biosd (bank.z80), en el hueco que @ctbl dejo libre
+; al mudarse. Ver la nota en memmap.inc.
+            org  BD_RT
             defs 4
             ds   0F7A4h-$        ; guarda: detras, las variables de ?bank
 
             org  chario$save
 
 ; ---------------------------------------------------------------------
-;  ?ci/?co/?cist/?cost/?cinit - contrato de BIOSKRNL (B=dispositivo,
-;  ignorado: un unico dispositivo fisico).
+;  ?ci/?co/?cist/?cost - contrato de BIOSKRNL: B = numero de dispositivo
+;  fisico, el indice dentro de @ctbl. 0 = CON, 1 = NET (net.z80).
+;
+;  Hasta ahora B se ignoraba porque solo habia un dispositivo. Ahora hay
+;  dos, y este reparto es lo unico que hace falta para que funcionen las
+;  rutinas auxin/auxout/auxist/auxost de BIOSKRNL.ASM: ellas recorren los
+;  vectores @aivec/@aovec y llaman aqui con B puesto. O sea que un
+;  "DEVICE AUX:=NET" ya deja el puente colgado del dispositivo logico AUX,
+;  sin tocar una linea de la BDOS ni del BIOS.
+;
+;  Se reparte con "or a / jp nz", no con una tabla: son dos dispositivos,
+;  y un B fuera de rango no puede llegar aqui (lo filtra @ctbl).
 ; ---------------------------------------------------------------------
-?cist:                               ; A=0FFh si hay tecla, 0 si no
+?cist:      ld   a,b
+            or   a
+            jp   nz,net_cist
+            ; cae a la consola
+con_cist:                            ; A=0FFh si hay tecla, 0 si no
             call scan_keys          ; A=indice/0FFh, E: bit0=SHIFT bit1=ENTER
             cp   0FFh
             jr   nz,cst_yes         ; hay tecla normal
@@ -100,10 +126,16 @@ cst_no:     xor  a
 cst_yes:    ld   a,0FFh
             ret
 
-?ci:                                 ; A = ASCII (bloqueante)
+?ci:        ld   a,b                 ; A = ASCII (bloqueante)
+            or   a
+            jp   nz,net_ci
             jp   kbget
 
-?co:                                 ; C = caracter (emulacion terminal ADM-3A)
+?co:        ld   a,b                 ; C = caracter
+            or   a
+            jp   nz,net_co
+            ; cae a la consola (emulacion de terminal ANSI)
+con_co:
             call cursor_clear       ; borrar el cursor antes de imprimir (coherencia)
             ld   a,(term_state)
             or   a
@@ -156,6 +188,7 @@ co_adm3a:   ld   a,2
 co_ansi:    xor  a                  ; empieza ESC [ : parametros a cero
             ld   (ansi_n),a
             ld   (ansi_cnt),a
+            ld   (ansi_priv),a
             ld   a,4
             ld   (term_state),a
             ret
@@ -193,13 +226,32 @@ co_abort:   xor  a
 ;  3-0, y en cada nibble el bit alto es el brillo. Los colores del
 ;  hardware NO estan en el orden de ANSI, de ahi la tabla ansi_ctab.
 ; =====================================================================
+; ---------------------------------------------------------------------
+;  ansi_char - un byte dentro de una secuencia CSI (ESC [ ...).
+;
+;  Segun ECMA-48, detras de CSI vienen:
+;      $20-$2F  bytes intermedios
+;      $30-$3F  bytes de parametro (digitos, ';' y $3A-$3F privados)
+;      $40-$7E  UN byte final, y ese es el unico que la termina.
+;
+;  Antes se terminaba con el primer byte que no fuera digito ni ';', y
+;  eso parte por la mitad cualquier secuencia privada: con ESC[?1000l
+;  (desactivar reporte de raton, lo que manda media BBS al despedirse)
+;  el '?' se tomaba por la letra final y el "1000l" acababa impreso en
+;  pantalla como texto. Visto contra una BBS de verdad.
+;
+;  Ahora los bytes privados e intermedios se absorben, y si la secuencia
+;  llevaba alguno de $3A-$3F se ignora entera: son modos DEC que no
+;  soportamos, y ejecutar la letra final sin entender el parametro seria
+;  peor que no hacer nada.
+; ---------------------------------------------------------------------
 ansi_char:  ld   a,c
             cp   ';'
             jr   z,ansi_sep
             cp   '0'
-            jr   c,ansi_end
+            jr   c,ansi_int         ; $20-$2F: intermedio, absorber
             cp   '9'+1
-            jr   nc,ansi_end
+            jr   nc,ansi_hi     ; $3A-$3F privado, o $40-$7E final
             sub  '0'                ; digito: n = n*10 + digito
             ld   e,a
             ld   a,(ansi_n)
@@ -212,7 +264,17 @@ ansi_char:  ld   a,c
             ld   (ansi_n),a
             ret
 ansi_sep:   jp   ansi_push          ; ';' cierra un parametro
-ansi_end:   call ansi_push          ; una letra cierra el ultimo y ejecuta
+
+ansi_hi:
+            cp   040h
+            jr   nc,ansi_end        ; $40-$7E: la letra final de verdad
+            ld   (ansi_priv),a      ; $3A-$3F: marcar como privada
+ansi_int:   ret                     ; absorber y seguir dentro de la secuencia
+
+ansi_end:   ld   a,(ansi_priv)
+            or   a
+            jp   nz,ansi_done       ; secuencia privada: ignorarla entera
+            call ansi_push          ; una letra cierra el ultimo y ejecuta
             ld   a,c
             cp   'm'
             jp   z,ansi_sgr
@@ -464,10 +526,17 @@ ansi2chroma:                        ; A = color ANSI (0-7) -> color del hardware
             ret
 ansi_ctab:  defb 0,2,4,6,1,3,5,7    ; negro rojo verde amarillo azul magenta cian blanco
 
-?cost:      ld   a,0FFh              ; la escritura a pantalla nunca bloquea
+?cost:      ld   a,b
+            or   a
+            jp   nz,net_cost
+            ld   a,0FFh              ; la escritura a pantalla nunca bloquea
             ret
 
-?cinit:     ret                      ; sin baudios/nada que inicializar
+; ?cinit recibe el dispositivo en C, no en B (BIOSKRNL.ASM:110). Da igual:
+; ninguno de los dos tiene nada que inicializar -- la consola porque la
+; configuro "start" antes de arrancar, y NET porque la velocidad la fija
+; el otro extremo.
+?cinit:     ret
 
 print_glyph:                        ; A = carácter (20h..7Fh) en el cursor
             push af
@@ -853,6 +922,7 @@ cur_attr:   defb ATTR_SCREEN     ; color con el que se imprime ahora
 ansi_n:     defs 1               ; parametro ANSI que se acumula
 ansi_par:   defs 4               ; parametros ya cerrados
 ansi_cnt:   defs 1               ; cuantos hay
+ansi_priv:  defs 1               ; !=0 si la secuencia lleva un byte privado
 mods_seen:  defs 1
 ctrl_prefix: defs 1
 cursor_save: defs 1
