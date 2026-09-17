@@ -1,0 +1,335 @@
+; =====================================================================
+;  NETTIME.Z80 - donde se va el tiempo en el camino de red del Z80.
+;
+;  Contexto: la traza del emulador demostro que el Z80 tarda ~655 ms en
+;  consumir 128 bytes (5,1 ms por byte, unos 16.500 ciclos), mientras el
+;  emulador entrega los datos en microsegundos en cuanto se los piden.
+;  O sea que el cuello de botella esta aqui, y hay que localizarlo.
+;
+;  TRES MODOS
+;
+;    NETTIME      coste de un comando MCU, sin datos ni conexion.
+;                 Lanza NET_READ con max=0 (el "¿hay algo?" barato de la
+;                 especificacion) y cuenta cuantos caben en 5 segundos.
+;
+;    NETTIME B    llamadas a la funcion 12. OJO: no es la funcion barata
+;                 que parece. En el RESBDOS, "cpi diskfx / jnc disk$func"
+;                 con diskfx=12 la manda por el camino de disco, o sea el
+;                 cambio de banco al BDOS bancado. Sirve para medir ESE
+;                 camino, no el andamiaje minimo.
+;
+;    NETTIME O    la funcion 8 (AUXOST). Mismo recorrido que la 7 pero
+;                 SIN comando MCU: es el control que aisla cuanto cuesta
+;                 el comando lanzado desde dentro del XIOS.
+;
+;    NETTIME R    bytes por segundo LEYENDO de AUX y tirandolos.
+;                 Mide el camino BDOS + driver, sin pintar nada.
+;
+;    NETTIME P    lo mismo, pero pintando cada byte en pantalla.
+;
+;  La diferencia entre R y P es lo que cuesta el terminal. Si R ya sale
+;  lento, el problema esta en las llamadas al BDOS y en el driver, y
+;  optimizar el pintado no serviria de nada.
+;
+;  R y P necesitan que este entrando algo: conecta con TERM, pide a la
+;  BBS un listado largo, sal con ENTER+0 (la conexion vive en el
+;  emulador, no se cae) y lanza esto enseguida.
+;
+;  OJO AL SEGUNDO NUMERO. Si se drena mas rapido de lo que la BBS manda,
+;  lo que se mide es la velocidad de la BBS y no la nuestra. Por eso se
+;  cuentan tambien los sondeos EN VACIO: si salen muchos, la medida no
+;  vale y hay que buscar una fuente mas rapida.
+;
+;  COMO LEER LOS NUMEROS
+;
+;  Salen en hexadecimal. El primero es la cuenta (comandos en grupos de
+;  16, o bytes sueltos); el segundo, los sondeos en vacio. Divide entre
+;  5 para tener el ritmo por segundo.
+;
+;  El reloj se lleva mirando cuando CAMBIA el campo de segundos de la
+;  funcion 105, no restando: viene en BCD y asi no hay que convertirlo.
+;  Y solo se mira una vez cada TDIV vueltas, porque preguntar la hora es
+;  otra llamada al BDOS y falsearia justo lo que se quiere medir.
+;
+;  AVISO: si el MCU no contesta, la espera de toggle es infinita y hay
+;  que resetear. Es el mismo riesgo que cualquier comando MCU.
+; =====================================================================
+
+BDOS        equ  0005h
+FCB         equ  005Ch
+
+F_RESET     equ  0
+F_CONOUT2   equ  2
+F_AUXIN     equ  3
+F_CONIO     equ  6
+F_AUXIST    equ  7
+F_AUXOST    equ  8         ; estado de salida de AUX (el control del modo O)
+F_PRINT     equ  9
+F_TIME      equ  105        ; CP/M 3: devuelve los segundos en A (BCD)
+
+CIO_IN      equ  0FDh       ; 0FDh-0FFh no se pueden imprimir con la 6
+
+DataPort    equ  0A7h
+ClkPort     equ  0AFh
+CMD_NET_RD  equ  66
+
+SECONDS     equ  5          ; duracion de la medida
+TDIV        equ  16         ; vueltas entre dos miradas al reloj
+
+            org  0100h
+
+start:      ld   a,(FCB+1)
+            ld   (mode),a
+            cp   'R'
+            jr   z,rx_go
+            cp   'P'
+            jr   z,rx_go
+            cp   'B'
+            jr   z,bd_go
+            cp   'O'
+            jr   z,ao_go
+
+; --- modo comando: cuanto cuesta un NET_READ vacio -------------------
+            ld   de,msg_cmd
+            ld   c,F_PRINT
+            call BDOS
+            call t_start
+cm_loop:    ld   b,16               ; de 16 en 16, para no desbordar el
+cm_16:      push bc                 ; contador de 16 bits
+            call netpoll
+            pop  bc
+            djnz cm_16
+            call bump
+            call t_done
+            jr   nc,cm_loop
+            jp   report
+
+; ---------------------------------------------------------------------
+;  modo B: el camino bancado del BDOS.
+;
+;  Se eligio la funcion 12 (version del sistema) creyendo que seria la
+;  llamada mas barata posible: devuelve dos bytes de una constante, sin
+;  tocar discos ni dispositivos. Pero en el RESBDOS esta
+;
+;      cpi diskfx        ; diskfx equ 12
+;      jnc disk$func
+;
+;  o sea que la 12 y todo lo que venga detras se van por el camino de
+;  disco, con cambio de banco al BDOS bancado. Asi que esto NO mide el
+;  andamiaje minimo: mide el camino pesado completo.
+;
+;  Sigue sirviendo, pero como referencia: da el coste de cruzar de banco,
+;  para comparar con lo que cuesta el camino residente de AUX (7 y 8),
+;  que no cruza nunca.
+; ---------------------------------------------------------------------
+bd_go:      ld   de,msg_bd
+            ld   c,F_PRINT
+            call BDOS
+            call t_start
+bd_loop:    ld   b,16
+bd_16:      push bc
+            ld   c,12               ; ...que resulta NO ser barata
+            call BDOS
+            pop  bc
+            djnz bd_16
+            call bump
+            call t_done
+            jr   nc,bd_loop
+            jp   report
+
+; ---------------------------------------------------------------------
+;  modo O: el control para aislar el comando MCU.
+;
+;  La funcion 8 (AUXOST, estado de salida de AUX) recorre EXACTAMENTE el
+;  mismo camino que la 7 -- RESBDOS residente, out$scan sobre @aovec,
+;  biosw con su cambio de banco, banco de sistema -- pero acaba en
+;  net_cost, y con el bufer de salida vacio net_flush vuelve sin hablar
+;  con el MCU.
+;
+;  Asi que la diferencia entre la 7 y la 8 es, limpiamente, lo que cuesta
+;  el comando MCU lanzado DESDE DENTRO del XIOS. Y eso se puede comparar
+;  con los 0,24 ms que cuesta el mismo comando desde la TPA (modo por
+;  defecto). Si no coinciden, el comando es mas caro dentro que fuera y
+;  hay que preguntarse por que.
+; ---------------------------------------------------------------------
+ao_go:      ld   de,msg_ao
+            ld   c,F_PRINT
+            call BDOS
+            call t_start
+ao_loop:    ld   b,16
+ao_16:      push bc
+            ld   c,F_AUXOST
+            call BDOS
+            pop  bc
+            djnz ao_16
+            call bump
+            call t_done
+            jr   nc,ao_loop
+            jp   report
+
+; --- modos R y P: drenar AUX y contar bytes --------------------------
+rx_go:      ld   de,msg_rx
+            ld   c,F_PRINT
+            call BDOS
+            call t_start
+rx_loop:    ld   c,F_AUXIST
+            call BDOS
+            or   a
+            jr   nz,rx_data
+            ld   hl,(empty)         ; sondeo en vacio: la fuente no da mas
+            inc  hl
+            ld   (empty),hl
+            jr   rx_next
+rx_data:    ld   c,F_AUXIN
+            call BDOS
+            ld   e,a
+            ld   a,(mode)
+            cp   'P'
+            call z,conout
+            call bump
+rx_next:    call t_done
+            jr   nc,rx_loop
+
+; ---------------------------------------------------------------------
+report:     ld   de,msg_res
+            ld   c,F_PRINT
+            call BDOS
+            ld   hl,(count)
+            call put_hl
+            ld   de,msg_emp
+            ld   c,F_PRINT
+            call BDOS
+            ld   hl,(empty)
+            call put_hl
+            ld   de,msg_tail
+            ld   c,F_PRINT
+            call BDOS
+            ld   c,F_RESET
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+;  t_start / t_done - el cronometro. t_done pone acarreo cuando se han
+;  cumplido los SECONDS segundos.
+; ---------------------------------------------------------------------
+t_start:    ld   hl,0
+            ld   (count),hl
+            ld   (empty),hl
+            xor  a
+            ld   (secs),a
+            ld   a,TDIV
+            ld   (tcnt),a
+            call getsec
+            ld   (lastsec),a
+            ret
+
+;  Convenio: vuelve con ACARREO PUESTO cuando se acabo el tiempo.
+t_done:     ld   a,(tcnt)
+            dec  a
+            ld   (tcnt),a
+            jr   z,td_check
+td_go:      or   a                  ; acarreo a 0 = seguir
+            ret
+td_check:   ld   a,TDIV
+            ld   (tcnt),a
+            call getsec
+            ld   hl,lastsec
+            cp   (hl)
+            jr   z,td_go            ; el segundo no ha cambiado
+            ld   (hl),a
+            ld   a,(secs)
+            inc  a
+            ld   (secs),a
+            cp   SECONDS            ; acarreo si aun faltan segundos...
+            ccf                     ; ...asi que se invierte
+            ret
+bump:       ld   hl,(count)
+            inc  hl
+            ld   (count),hl
+            ret
+
+; ---------------------------------------------------------------------
+;  netpoll - NET_READ con max=0: el comando mas barato que existe, asi
+;  que lo que se mide es su coste fijo, sin transferencia.
+; ---------------------------------------------------------------------
+netpoll:    in   a,(ClkPort)        ; C = reloj actual (como sd_clk)
+            ld   c,a
+            ld   a,CMD_NET_RD
+            call mcu_send
+            xor  a
+            call mcu_send           ; max = 0
+            call mcu_recv           ; count (sera 0)
+            call mcu_recv           ; avail
+            call mcu_recv           ; status
+            ret
+
+mcu_send:   out  (DataPort),a
+            ld   a,c
+            cpl
+            ld   c,a
+ms_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,ms_w
+            ret
+
+mcu_recv:   in   a,(DataPort)
+            push af
+            ld   a,c
+            cpl
+            ld   c,a
+mr_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,mr_w
+            pop  af
+            ret
+
+; ---------------------------------------------------------------------
+conout:     ld   a,e                ; imprime E sin tocarlo
+            cp   CIO_IN
+            jr   nc,co_slow
+            ld   c,F_CONIO
+            jp   BDOS
+co_slow:    ld   c,F_CONOUT2
+            jp   BDOS
+
+getsec:     ld   de,tbuf
+            ld   c,F_TIME
+            call BDOS               ; A = segundos, en BCD
+            ret
+
+put_hl:     ld   a,h
+            call put_hex
+            ld   a,l
+put_hex:    push af
+            rra
+            rra
+            rra
+            rra
+            call put_nib
+            pop  af
+put_nib:    and  00Fh
+            add  a,'0'
+            cp   '9'+1
+            jr   c,ph_out
+            add  a,7
+ph_out:     ld   e,a
+            ld   c,F_CONOUT2
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+mode:       defb 0
+count:      defw 0
+empty:      defw 0
+secs:       defb 0
+tcnt:       defb TDIV
+lastsec:    defb 0
+tbuf:       defs 4                  ; fecha y hora de la funcion 105
+
+msg_cmd:    defb 13,10,'NETTIME: comandos MCU, 5 segundos...',13,10,'$'
+msg_rx:     defb 13,10,'NETTIME: bytes de AUX, 5 segundos...',13,10,'$'
+msg_bd:     defb 13,10,'NETTIME: llamadas BDOS, 5 segundos...',13,10,'$'
+msg_ao:     defb 13,10,'NETTIME: AUXOST (sin MCU), 5 segundos...',13,10,'$'
+msg_res:    defb 13,10,'cuenta: $'
+msg_emp:    defb '  sondeos en vacio: $'
+msg_tail:   defb 13,10,'(hexadecimal; divide entre 5)',13,10,'$'
+
+            end  start

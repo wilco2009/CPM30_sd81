@@ -15,7 +15,7 @@
 ;
 ;  Se sale con la tecla de EXITKEY (ver abajo).
 ;
-;  EL TECLADO SE MIRA EN CADA VUELTA, Y ESO NO ES NEGOCIABLE
+;  CADA CUANTO SE MIRA EL TECLADO
 ;
 ;  La primera version vaciaba AUX entera antes de mirar el teclado,
 ;  razonando que los datos llegan a rafagas y el teclado puede esperar.
@@ -24,9 +24,15 @@
 ;  lee JAMAS. Sintoma: la BBS pregunta algo, no puedes contestar, y
 ;  acaba colgando por inactividad.
 ;
-;  Asi que una vuelta = como mucho un byte de AUX + una mirada al
-;  teclado. Cuesta un escaneo de teclado por caracter recibido, que a
-;  la velocidad de una BBS no se nota.
+;  La correccion fue mirarlo en cada vuelta, y eso se paso al otro lado:
+;  cada mirada es un escaneo completo de la matriz mas el ida y vuelta al
+;  BDOS con su cambio de banco, y se pagaba POR CADA CARACTER RECIBIDO.
+;  Con una BBS pintando arte ANSI a pantalla completa, eso pesa.
+;
+;  El punto medio es mirarlo cada KBEVERY caracteres, y ademas SIEMPRE
+;  que AUX se quede vacia. Con 8, a la velocidad a la que entran los
+;  datos el teclado se sondea decenas de veces por segundo -- de sobra
+;  para no perder una pulsacion -- y se ahorran siete de cada ocho.
 ;
 ;  EL VOLCADO
 ;
@@ -78,7 +84,33 @@ CIO_IN      equ  0FDh       ; ...E=0FDh -> leer tecla (bloquea)
 ; del ZX81 no hay forma comoda de teclearla, cambia este valor por algo
 ; que si se pueda -- teniendo en cuenta que esa tecla deja de poder
 ; mandarse a la BBS.
-EXITKEY     equ  01Dh       ; Ctrl-]
+EXITKEY     equ  01Dh       ; Ctrl-]   (ENTER+0 en el teclado del ZX81)
+
+; Conmutador de eco local (el "duplex" de toda la vida).
+;
+; Una BBS hace eco remoto de lo que tecleas, asi que con eco local
+; permanente verias cada letra dos veces. Pero antes de conectar no hay
+; nadie al otro lado que haga el eco, y se teclea el ATDT a ciegas. De
+; ahi que sea un conmutador y no una opcion fija, igual que en todos los
+; terminales de la epoca.
+;
+; Arranca APAGADO: lo normal es pasar mas rato conectado que marcando, y
+; ver doble molesta mas que teclear a ciegas doce caracteres.
+;
+; La alternativa buena es ATE1, que deja el eco en manos del modem: lo
+; hace en modo comando y lo quita al conectar, sin que el terminal tenga
+; que saber nada. Esto de aqui funciona ademas cuando no hay interprete
+; AT al otro lado.
+ECHOKEY     equ  01Ch       ; Ctrl-\   (ENTER+9)
+
+; Conmutador del volcado. Arranca APAGADO aunque se haya dado nombre de
+; fichero: lo que interesa diagnosticar suele estar al final de la
+; sesion, detras de kilobytes de arte ANSI que no aportan nada. Con esto
+; dejas pasar la portada, enciendes justo antes del trozo bueno, y el
+; fichero sale corto y legible.
+LOGKEY      equ  01Eh       ; Ctrl-^   (ENTER+8)
+
+KBEVERY     equ  8          ; caracteres de AUX entre miradas al teclado
 
             org  0100h
 
@@ -104,7 +136,13 @@ loop:       ld   c,F_AUXIST         ; hay algo de la BBS?
             call conout
             ld   a,(rxbyte)
             call log_byte
-            ; y AHORA al teclado, sin atajos. Ver la cabecera.
+            ld   a,(kbdiv)          ; toca mirar el teclado? Ver la cabecera.
+            dec  a
+            ld   (kbdiv),a
+            jr   z,kb_now
+            jp   loop
+kb_now:     ld   a,KBEVERY
+            ld   (kbdiv),a
 
 do_kbd:     ld   c,F_CONIO          ; hay tecla?
             ld   e,CIO_STAT
@@ -116,10 +154,52 @@ do_kbd:     ld   c,F_CONIO          ; hay tecla?
             call BDOS
             cp   EXITKEY
             jr   z,done
+            cp   ECHOKEY
+            jr   z,do_echo
+            cp   LOGKEY
+            jr   z,do_log
+            ld   (txbyte),a
             ld   e,a
-            ld   c,F_AUXOUT         ; y mandarla por el tubo
+            ld   c,F_AUXOUT         ; mandarla por el tubo
+            call BDOS
+            ld   a,(localecho)
+            or   a
+            jr   z,loop
+            ld   a,(txbyte)         ; y, si toca, pintarla aqui tambien
+            ld   e,a
+            call conout
+            cp   00Dh               ; al otro lado va solo el CR, pero en
+            jr   nz,loop            ; pantalla hace falta el LF o se
+            ld   e,00Ah             ; reescribe encima de la misma linea
+            call conout
+            jr   loop
+
+; --- conmutar el eco local, y decir como ha quedado -------------------
+do_echo:    ld   a,(localecho)
+            xor  1
+            ld   (localecho),a
+            ld   de,msg_eco_on
+            or   a
+            jr   nz,de_say
+            ld   de,msg_eco_off
+de_say:     ld   c,F_PRINT
             call BDOS
             jr   loop
+
+; --- arrancar/parar el volcado ---------------------------------------
+do_log:     ld   a,(logging)
+            or   a
+            jr   z,dl_none          ; no hay fichero: nada que conmutar
+            ld   a,(logrec)
+            xor  1
+            ld   (logrec),a
+            ld   de,msg_log_on
+            or   a
+            jr   nz,dl_say
+dl_none:    ld   de,msg_log_off
+dl_say:     ld   c,F_PRINT
+            call BDOS
+            jp   loop
 
 done:       call log_close
             ld   de,msg_off
@@ -156,19 +236,42 @@ log_open:   ld   a,(FCB+1)
             inc  a                  ; 0FFh = no se pudo crear
             jr   z,log_err
             ld   a,1
-            ld   (logging),a
+            ld   (logging),a        ; fichero listo; grabar, todavia no
             ret
-log_err:    xor  a
+
+; --- algo fallo: apagar el volcado y decir el codigo del BDOS --------
+log_err:    push af
+            xor  a
             ld   (logging),a
+            ld   (logrec),a
             ld   de,msg_nolog
             ld   c,F_PRINT
+            call BDOS
+            pop  af
+            ; y cae en put_hex
+
+; --- A en dos digitos hexadecimales ----------------------------------
+put_hex:    push af
+            rra
+            rra
+            rra
+            rra
+            call put_nib
+            pop  af
+put_nib:    and  00Fh
+            add  a,'0'
+            cp   '9'+1
+            jr   c,ph_out
+            add  a,7                ; A-F
+ph_out:     ld   e,a
+            ld   c,F_CONOUT2
             jp   BDOS
 
 ; ---------------------------------------------------------------------
 ;  log_byte - mete A en el bufer; cuando se llenan los 128 B, lo escribe.
 ; ---------------------------------------------------------------------
 log_byte:   ld   b,a
-            ld   a,(logging)
+            ld   a,(logrec)
             or   a
             ret  z
             ld   a,(logcnt)
@@ -201,6 +304,8 @@ log_flush:  xor  a
 log_close:  ld   a,(logging)
             or   a
             ret  z
+            xor  a
+            ld   (logrec),a         ; no seguir grabando durante el cierre
             ld   a,(logcnt)
             or   a
             jr   z,lc_shut          ; el ultimo registro salio justo
@@ -222,13 +327,21 @@ lc_shut:    ld   de,FCB
             jp   BDOS
 
 ; ---------------------------------------------------------------------
+kbdiv:      defb 1                  ; cuenta atras hasta la proxima mirada
 rxbyte:     defb 0                  ; el byte que se acaba de recibir
-logging:    defb 0                  ; distinto de 0 si el volcado esta activo
+txbyte:     defb 0                  ; ...y el que se acaba de teclear
+localecho:  defb 0                  ; 1 = eco local (media duplex)
+logging:    defb 0                  ; 1 = hay fichero abierto y utilizable
+logrec:     defb 0                  ; 1 = grabando ahora mismo (LOGKEY)
 logcnt:     defb 0                  ; bytes ya metidos en el registro
 logbuf:     defs 128
 
-msg_on:     defb 13,10,'TERM - Ctrl-] para salir',13,10,'$'
+msg_on:     defb 13,10,'TERM - con ENTER: 0 salir, 9 eco, 8 log',13,10,'$'
+msg_log_on: defb 13,10,'[grabando]',13,10,'$'
+msg_log_off:defb 13,10,'[log parado]',13,10,'$'
+msg_eco_on: defb 13,10,'[eco local]',13,10,'$'
+msg_eco_off:defb 13,10,'[sin eco]',13,10,'$'
 msg_off:    defb 13,10,'TERM: fin.',13,10,'$'
-msg_nolog:  defb 13,10,'TERM: sin volcado.',13,10,'$'
+msg_nolog:  defb 13,10,'TERM: log cortado, BDOS=$'
 
             end  start

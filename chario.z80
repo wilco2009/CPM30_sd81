@@ -100,6 +100,9 @@ chario$save equ $            ; ver el "org" de cierre mas abajo
             jp   nz,net_cist
             ; cae a la consola
 con_cist:                            ; A=0FFh si hay tecla, 0 si no
+            ld   a,(ab_cnt)         ; respuesta a un DSR pendiente?
+            or   a
+            jr   nz,cst_yes         ; cuenta como tecla disponible
             call scan_keys          ; A=indice/0FFh, E: bit0=SHIFT bit1=ENTER
             cp   0FFh
             jr   nz,cst_yes         ; hay tecla normal
@@ -294,6 +297,12 @@ ansi_end:   ld   a,(ansi_priv)
             jp   z,ansi_ed          ; borrar pantalla
             cp   'K'
             jp   z,ansi_el          ; borrar linea
+            cp   's'
+            jp   z,ansi_scp         ; guardar posicion del cursor
+            cp   'u'
+            jp   z,ansi_rcp         ; restaurarla
+            cp   'n'
+            jp   z,ansi_dsr         ; "donde esta el cursor?"
 ansi_done:  xor  a
             ld   (term_state),a
             ret
@@ -362,13 +371,19 @@ ansi_cuu:   call ansi_n1
 cuu_ok:     ld   (cur_row),a
             jp   ansi_done
 
+; El "jr c" de la suma NO es opcional: con ESC[255B desde la fila 23,
+; 23+255 = 278, que en 8 bits es 22. El "cp SCRH" veria un 22, lo daria
+; por bueno y el cursor acabaria en la fila 22 en vez de en la 23.
+; Justo el caso que usan las BBS para medir la pantalla (ver ansi_dsr),
+; asi que les estabamos diciendo que el terminal es de 23x79.
 ansi_cud:   call ansi_n1
             ld   b,a
             ld   a,(cur_row)
             add  a,b
+            jr   c,cud_max          ; se salio de los 8 bits: al tope
             cp   SCRH
             jr   c,cud_ok
-            ld   a,SCRH-1           ; tope abajo
+cud_max:    ld   a,SCRH-1           ; tope abajo
 cud_ok:     ld   (cur_row),a
             jp   ansi_done
 
@@ -376,9 +391,10 @@ ansi_cuf:   call ansi_n1
             ld   b,a
             ld   a,(cur_col)
             add  a,b
+            jr   c,cuf_max
             cp   SCRW
             jr   c,cuf_ok
-            ld   a,SCRW-1           ; tope derecha
+cuf_max:    ld   a,SCRW-1           ; tope derecha
 cuf_ok:     ld   (cur_col),a
             jp   ansi_done
 
@@ -526,6 +542,128 @@ ansi2chroma:                        ; A = color ANSI (0-7) -> color del hardware
             ret
 ansi_ctab:  defb 0,2,4,6,1,3,5,7    ; negro rojo verde amarillo azul magenta cian blanco
 
+; =====================================================================
+;  Lo que sigue NO cabe en el tramo apretado $8000-$89FF del XIOS: al
+;  anadirlo se paso por 102 bytes. Se muda igual que hicieron rtc.z80 y
+;  net.z80. Ver la nota en memmap.inc.
+; =====================================================================
+chario$ansi$save equ $
+
+            org  ANSIORG
+
+; --- SCP/RCP: ESC[s guarda la posicion, ESC[u la restaura ------------
+ansi_scp:   ld   a,(cur_row)
+            ld   (sav_row),a
+            ld   a,(cur_col)
+            ld   (sav_col),a
+            jp   ansi_done
+
+ansi_rcp:   ld   a,(sav_row)
+            ld   (cur_row),a
+            ld   a,(sav_col)
+            ld   (cur_col),a
+            jp   ansi_done
+
+; ---------------------------------------------------------------------
+;  DSR: ESC[6n - "¿donde esta el cursor?". Se contesta ESC[fila;colR.
+;
+;  No es un adorno: las BBS lo usan para medir la pantalla. Mandan
+;  ESC[s, ESC[255B, ESC[255C, ESC[6n, ESC[u -- o sea, el cursor a la
+;  esquina de abajo a la derecha, preguntan donde acabo, y eso les dice
+;  cuantas filas y columnas hay. Si no se contesta, el programa se queda
+;  esperando la respuesta y acaba colgando por timeout. Visto con Mystic.
+;
+;  La respuesta sale por el CANAL DE ENTRADA, no por el de salida: se
+;  mete en un bufer que ?cist y kbget sirven antes que el teclado, como
+;  si la hubieras tecleado tu. Es exactamente lo que hace un terminal de
+;  verdad -- un VT100 contesta al DSR por la misma linea serie por la
+;  que viajan las pulsaciones -- y tiene la ventaja de que el programa
+;  de comunicaciones no necesita enterarse de nada: lee "teclas" y las
+;  manda, sin saber que se las ha inventado el terminal.
+;
+;  Las coordenadas de ANSI empiezan en 1 y las nuestras en 0, de ahi los
+;  "inc a".
+; ---------------------------------------------------------------------
+ansi_dsr:   ld   a,(ansi_par)
+            cp   6
+            jp   nz,ansi_done       ; solo se entiende el DSR 6
+            ld   hl,ab_buf
+            ld   (hl),01Bh
+            inc  hl
+            ld   (hl),'['
+            inc  hl
+            ld   a,(cur_row)
+            cp   SCRH
+            jr   c,dsr_r
+            ld   a,SCRH-1
+dsr_r:      inc  a
+            call ab_num
+            ld   (hl),';'
+            inc  hl
+            ld   a,(cur_col)
+            cp   SCRW               ; tras imprimir en la ultima columna
+            jr   c,dsr_c            ; cur_col puede valer SCRW: no se
+            ld   a,SCRW-1           ; puede contestar una columna 81
+dsr_c:      inc  a
+            call ab_num
+            ld   (hl),'R'
+            inc  hl
+            ld   de,ab_buf
+            or   a                  ; limpiar acarreo para el sbc
+            sbc  hl,de
+            ld   a,l                ; A = cuantos bytes se han montado
+            ld   (ab_cnt),a
+            ld   hl,ab_buf
+            ld   (ab_ptr),hl
+            jp   ansi_done
+
+;  ab_num - A (1..99) en decimal a (HL), avanzando HL. Sin cero a la
+;  izquierda: ESC[7;3R, no ESC[07;03R.
+ab_num:     ld   b,'0'-1
+ab_d10:     inc  b
+            sub  10
+            jr   nc,ab_d10
+            add  a,10
+            ld   c,a                ; C = unidades
+            ld   a,b
+            cp   '0'
+            jr   z,ab_uni           ; no hay decenas que sacar
+            ld   (hl),a
+            inc  hl
+ab_uni:     ld   a,c
+            add  a,'0'
+            ld   (hl),a
+            inc  hl
+            ret
+
+; --- tabla de filas para char_addr (ver la nota alli) ----------------
+;  row_tab[fila] = direccion del primer caracter de esa fila. La calcula
+;  el ensamblador, asi que en ejecucion es una lectura y ya.
+row_tab:    defw DFILE+1+ROWSTRIDE*0,  DFILE+1+ROWSTRIDE*1
+            defw DFILE+1+ROWSTRIDE*2,  DFILE+1+ROWSTRIDE*3
+            defw DFILE+1+ROWSTRIDE*4,  DFILE+1+ROWSTRIDE*5
+            defw DFILE+1+ROWSTRIDE*6,  DFILE+1+ROWSTRIDE*7
+            defw DFILE+1+ROWSTRIDE*8,  DFILE+1+ROWSTRIDE*9
+            defw DFILE+1+ROWSTRIDE*10, DFILE+1+ROWSTRIDE*11
+            defw DFILE+1+ROWSTRIDE*12, DFILE+1+ROWSTRIDE*13
+            defw DFILE+1+ROWSTRIDE*14, DFILE+1+ROWSTRIDE*15
+            defw DFILE+1+ROWSTRIDE*16, DFILE+1+ROWSTRIDE*17
+            defw DFILE+1+ROWSTRIDE*18, DFILE+1+ROWSTRIDE*19
+            defw DFILE+1+ROWSTRIDE*20, DFILE+1+ROWSTRIDE*21
+            defw DFILE+1+ROWSTRIDE*22, DFILE+1+ROWSTRIDE*23
+
+; Las variables del bloque viven aqui tambien: cada byte que se queda en
+; el XIOS es un byte que le falta para caber.
+sav_row:    defs 1               ; ESC[s / ESC[u
+sav_col:    defs 1
+ab_buf:     defs 10              ; respuesta al DSR: ESC[nn;nnR = 8 bytes
+ab_cnt:     defs 1               ; cuantos quedan por servir
+ab_ptr:     defs 2               ; el siguiente
+
+            ds   LDR_BASE-$      ; guarda: detras, el cargador
+
+            org  chario$ansi$save
+
 ?cost:      ld   a,b
             or   a
             jp   nz,net_cost
@@ -576,19 +714,24 @@ pg_set:     ld   (cur_col),a
 ;  sin restaurar -- explicaba caracteres que "se memorizaban" en CP/M
 ;  (CONIN los captura bien) pero no se pintaban (CONOUT lee C DESPUES de
 ;  cursor_clear).
+;  La fila NO se multiplica sumando en un bucle, que es como estaba: eran
+;  hasta 23 vueltas de unos 55 ciclos, y esta rutina se llama DOS veces
+;  por caracter impreso (una desde cursor_clear al entrar en ?co y otra
+;  desde print_glyph). En la mitad baja de la pantalla se iban ~2500
+;  ciclos por caracter, que con una BBS mandando arte ANSI a pantalla
+;  completa es la diferencia entre seguirle el ritmo y no seguirlo. La
+;  tabla cuesta 48 bytes y deja la cuenta en unos 40 ciclos.
 char_addr:  push bc
             ld   a,(cur_row)
-            ld   hl,0
-            or   a
-            jr   z,ca_rowdone
-            ld   b,a
-ca_rowloop: push bc
-            ld   bc,ROWSTRIDE
+            add  a,a                ; fila*2 = indice en la tabla
+            ld   c,a
+            ld   b,0
+            ld   hl,row_tab
             add  hl,bc
-            pop  bc
-            djnz ca_rowloop
-ca_rowdone: ld   bc,DFILE+1
-            add  hl,bc
+            ld   a,(hl)
+            inc  hl
+            ld   h,(hl)
+            ld   l,a                ; HL = principio de la fila
             ld   a,(cur_col)
             add  a,l
             ld   l,a
@@ -658,6 +801,9 @@ cls:        ld   hl,DFILE
 ;  kbget — teclado ZX81 (copia de bios.z80/conin.asm)
 ; ---------------------------------------------------------------------
 kbget:                              ; devuelve ASCII en A
+            ld   a,(ab_cnt)         ; la respuesta al DSR va primero: el
+            or   a                  ; programa la lee como si fuera algo
+            jr   nz,kb_ans          ; que has tecleado tu. Ver ansi_dsr.
 ck_top:     ld   a,(ctrl_prefix)
             or   a
             jr   nz,ck_pwait        ; modo CTRL armado -> esperar la tecla
@@ -685,6 +831,15 @@ ck_nwait:   call wait_scan          ; A=idx/FF ; E: bit0=SHIFT bit1=ENTER
             call cursor_clear
             ld   a,0Dh              ; ENTER solo -> CR
             ret
+; --- servir un byte de la respuesta al DSR (ver ansi_dsr) ------------
+kb_ans:     dec  a
+            ld   (ab_cnt),a
+            ld   hl,(ab_ptr)
+            ld   a,(hl)
+            inc  hl
+            ld   (ab_ptr),hl
+            ret
+
 ck_clr:     xor  a
             ld   (enter_used),a
             jr   ck_top
@@ -927,13 +1082,19 @@ keymap_sym:  ; ENTER+tecla: los simbolos serigrafiados del ZX81, mas los
             defb 000h,05Ch,000h,07Eh,060h  ; A9 : S=\ F=~ G=`
             defb 027h,07Bh,07Dh,05Bh,05Fh  ; A10: Q=' W={ E=} R=[ T=_
             defb '!',040h,'#',07Ch,'%'     ; A11: 1=! 2=@ 3=# 4=| 5=%
-            defb 01Dh,000h,000h,000h,'&'   ; A12: 0=^] (GS)  6=&
-             ; ENTER+0 = $1D. El modo CTRL (SHIFT+ENTER) saca la letra
-             ; AND $1F, asi que llega de ^A a ^Z y a NUL con el espacio,
-             ; pero $1B-$1F harian falta [ \ ] ^ _ en el mapa base, donde
-             ; solo hay letras y digitos. ESC se salva porque esta aparte
-             ; en SHIFT+1; ^] no tenia forma de teclearse, y es justo la
-             ; tecla de salida que espera TERM.COM (la de telnet).
+            defb 01Dh,01Ch,01Eh,000h,'&'   ; A12: 0=^] 9=^\ 8=^^ 6=&
+             ; ENTER+0 = $1D (^]), ENTER+9 = $1C (^\) y ENTER+8 = $1E
+             ; (^^). El modo CTRL
+             ; (SHIFT+ENTER) saca la letra AND $1F, asi que llega de ^A a
+             ; ^Z y a NUL con el espacio, pero para $1B-$1F harian falta
+             ; [ \ ] ^ _ en el mapa base, donde solo hay letras y digitos.
+             ; ESC se salva porque esta aparte en SHIFT+1.
+             ;
+             ; Estos tres son justo los que usa TERM.COM para lo suyo
+             ; (salir, conmutar el eco local y arrancar/parar el volcado).
+             ; Van ahi precisamente porque ninguna BBS los usa: si fueran
+             ; CTRL+letra, un dia te comerian una tecla que hace falta
+             ; mandar.
             defb 022h,')','(','$',05Dh     ; A13: P=" O=) I=( U=$ Y=]
             defb 00Dh,'=','+','-',05Eh     ; A14: L== K=+ J=- H=^
             defb ' ',',','>','<','*'       ; A15: .=, M=> N=< B=*
@@ -954,6 +1115,8 @@ ansi_n:     defs 1               ; parametro ANSI que se acumula
 ansi_par:   defs 4               ; parametros ya cerrados
 ansi_cnt:   defs 1               ; cuantos hay
 ansi_priv:  defs 1               ; !=0 si la secuencia lleva un byte privado
+                                 ; (sav_row, ab_buf y companeras estan en
+                                 ;  el bloque de ANSIORG, mas arriba)
 mods_seen:  defs 1
 ctrl_prefix: defs 1
 cursor_save: defs 1

@@ -250,6 +250,17 @@ RTCORG       equ 0CE00h
 NETORG       equ 0D030h
 
 ; ---------------------------------------------------------------------
+;  Las ampliaciones del terminal ANSI (ESC[s, ESC[u y la respuesta al
+;  ESC[6n), por el mismo motivo de siempre: el XIOS no cabe en el tramo
+;  $8000-$89FF. Con esto se paso por 102 bytes.
+;
+;  Va detras de net.z80, en lo que quedaba antes del cargador. Guardas
+;  encadenadas: net.z80 cierra con "ds ANSIORG-$" y este bloque con
+;  "ds LDR_BASE-$".
+; ---------------------------------------------------------------------
+ANSIORG      equ 0D210h
+
+; ---------------------------------------------------------------------
 ;  Estado de biosd (bank.z80), el envoltorio de las entradas de disco.
 ;  Cuatro bytes, en el hueco que quedaba detras de @ctbl.
 ;

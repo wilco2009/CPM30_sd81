@@ -232,6 +232,6 @@ net_ochar:  defb 0                   ; el byte que esta metiendo ?co
 net_ibuf:   defs NET_IBUFSZ
 net_obuf:   defs NET_OBUFSZ
 
-            ds   LDR_BASE-$      ; guarda: detras, el cargador
+            ds   ANSIORG-$       ; guarda: detras, el bloque ANSI de chario
 
             org  net$save
