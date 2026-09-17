@@ -172,7 +172,7 @@ do_kbd:     ld   c,F_CONIO          ; hay tecla?
             jr   nz,loop            ; pantalla hace falta el LF o se
             ld   e,00Ah             ; reescribe encima de la misma linea
             call conout
-            jr   loop
+            jp   loop
 
 ; --- conmutar el eco local, y decir como ha quedado -------------------
 do_echo:    ld   a,(localecho)
@@ -184,7 +184,7 @@ do_echo:    ld   a,(localecho)
             ld   de,msg_eco_off
 de_say:     ld   c,F_PRINT
             call BDOS
-            jr   loop
+            jp   loop
 
 ; --- arrancar/parar el volcado ---------------------------------------
 do_log:     ld   a,(logging)

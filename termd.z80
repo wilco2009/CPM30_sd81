@@ -1,0 +1,224 @@
+; =====================================================================
+;  TERMD.Z80 - terminal EXPERIMENTAL que habla con el MCU directamente.
+;
+;  No es el terminal definitivo ni pretende serlo: es un experimento para
+;  contestar a una pregunta concreta, porque las estimaciones a mano no
+;  estan acertando y hace falta un numero medido.
+;
+;  LA PREGUNTA
+;
+;  TERM.COM pasa por CP/M para todo. Por cada byte que llega hace
+;  AUXIST + AUXIN, y ademas una impresion por bloque. Si se quita CP/M
+;  del camino de DATOS, ¿cuanto se gana?
+;
+;  Aqui la lectura es un unico comando MCU que trae hasta 128 bytes de
+;  golpe, directamente al bufer del programa, sin BDOS, sin cambios de
+;  banco y sin driver. De 256 llamadas al BDOS por cada 128 bytes se pasa
+;  a CERO.
+;
+;  LO QUE NO QUITA
+;
+;  La impresion. Los bytes hay que pintarlos, y eso sigue pasando por la
+;  funcion 111 del BDOS y por el emulador de terminal del XIOS. Si TERMD
+;  sale igual de lento que TERM, el tiempo se va en pintar y no en leer,
+;  y ahi es donde hay que trabajar. Si sale mucho mas rapido, el coste
+;  estaba en el camino de CP/M hacia AUX.
+;
+;  Esa comparacion es el resultado: el programa esta escrito para
+;  responder eso, no para usarse a diario.
+;
+;  LO QUE SE PIERDE
+;
+;  Al saltarse AUX, esto ya no funciona con "DEVICE AUX:=NET" ni serviria
+;  contra un puerto serie de verdad. Por eso es un ejercicio.
+;
+;  MEDIR CON EL
+;
+;  Igual que con TERM: la cuenta atras de una BBS es un cronometro que
+;  viene en los propios datos. Si baja a un numero por segundo, vamos al
+;  ritmo del servidor.
+;
+;  Teclas: ENTER+0 salir, ENTER+9 eco local.
+;
+;  OJO CON C: es el reloj del handshake, y mcu_send/mcu_recv lo invierten
+;  en cada byte. Lo mismo que en net.z80, y por las mismas razones -- ahi
+;  esta la explicacion larga.
+; =====================================================================
+
+BDOS        equ  0005h
+
+F_RESET     equ  0
+F_CONOUT2   equ  2
+F_CONIO     equ  6
+F_PRINT     equ  9
+F_PRTBLK    equ  111        ; imprimir un bloque: DE -> CCB
+
+CIO_STAT    equ  0FEh
+CIO_IN      equ  0FDh
+
+DataPort    equ  0A7h
+ClkPort     equ  0AFh
+CMD_NET_RD  equ  66
+CMD_NET_WR  equ  67
+
+RXMAX       equ  128        ; lo que cabe en un solo NET_READ
+
+EXITKEY     equ  01Dh       ; ENTER+0
+ECHOKEY     equ  01Ch       ; ENTER+9
+
+            org  0100h
+
+start:      ld   de,msg_on
+            ld   c,F_PRINT
+            call BDOS
+
+; ---------------------------------------------------------------------
+;  Bucle principal: un comando MCU trae el bloque entero, una llamada al
+;  BDOS lo pinta, y despues se mira el teclado.
+; ---------------------------------------------------------------------
+loop:       ld   hl,rxbuf
+            ld   b,RXMAX
+            call net_read           ; B = cuantos ha traido de verdad
+            ld   a,b
+            or   a
+            jr   z,do_kbd           ; no habia nada
+            ld   (ccb_len),a
+            ld   de,ccb
+            ld   c,F_PRTBLK
+            call BDOS
+
+do_kbd:     ld   c,F_CONIO
+            ld   e,CIO_STAT
+            call BDOS
+            or   a
+            jr   z,loop
+            ld   c,F_CONIO
+            ld   e,CIO_IN
+            call BDOS
+            cp   EXITKEY
+            jr   z,done
+            cp   ECHOKEY
+            jr   z,do_echo
+            ld   (txbyte),a
+            ld   hl,txbyte          ; mandarla, tambien sin pasar por CP/M
+            ld   b,1
+            call net_write
+            ld   a,(localecho)
+            or   a
+            jr   z,loop
+            ld   a,(txbyte)
+            ld   e,a
+            call conout
+            cp   00Dh               ; al otro lado va solo el CR; en
+            jr   nz,loop            ; pantalla hace falta ademas el LF
+            ld   e,00Ah
+            call conout
+            jr   loop
+
+do_echo:    ld   a,(localecho)
+            xor  1
+            ld   (localecho),a
+            ld   de,msg_eco_on
+            or   a
+            jr   nz,de_say
+            ld   de,msg_eco_off
+de_say:     ld   c,F_PRINT
+            call BDOS
+            jr   loop
+
+done:       ld   de,msg_off
+            ld   c,F_PRINT
+            call BDOS
+            ld   c,F_RESET
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+;  net_read / net_write - las mismas de net.z80, sin cambios. Aqui se
+;  ejecutan desde la TPA en vez de desde el XIOS, que es justo la
+;  diferencia que se quiere medir.
+; ---------------------------------------------------------------------
+net_read:   push hl
+            ld   d,b
+            call sd_clk
+            ld   a,CMD_NET_RD
+            call mcu_send
+            ld   a,d
+            call mcu_send           ; max
+            call mcu_recv
+            ld   b,a                ; count
+            ld   d,a                ; copia a salvo (C es el reloj)
+            or   a
+            jr   z,nr_tail
+nr_loop:    call mcu_recv
+            ld   (hl),a
+            inc  hl
+            djnz nr_loop
+nr_tail:    call mcu_recv           ; avail
+            call mcu_recv           ; status
+            ld   b,d
+            pop  hl
+            ret
+
+net_write:  call sd_clk
+            ld   a,CMD_NET_WR
+            call mcu_send
+            ld   a,b
+            call mcu_send           ; count
+            ld   a,b                ; RECARGAR: mcu_send se come A
+            or   a
+            jr   z,nw_tail
+nw_loop:    ld   a,(hl)
+            call mcu_send
+            inc  hl
+            djnz nw_loop
+nw_tail:    call mcu_recv           ; aceptados
+            ld   b,a
+            call mcu_recv           ; status
+            ret
+
+sd_clk:     in   a,(ClkPort)
+            ld   c,a
+            ret
+
+mcu_send:   out  (DataPort),a
+            ld   a,c
+            cpl
+            ld   c,a
+ms_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,ms_w
+            ret
+
+mcu_recv:   in   a,(DataPort)
+            push af
+            ld   a,c
+            cpl
+            ld   c,a
+mr_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,mr_w
+            pop  af
+            ret
+
+; ---------------------------------------------------------------------
+conout:     ld   a,e
+            cp   CIO_IN             ; 0FDh-0FFh no caben en la funcion 6
+            jr   nc,co_slow
+            ld   c,F_CONIO
+            jp   BDOS
+co_slow:    ld   c,F_CONOUT2
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+txbyte:     defb 0
+localecho:  defb 0
+ccb:        defw rxbuf              ; CCB de la funcion 111:
+ccb_len:    defw 0                  ;   direccion y longitud
+rxbuf:      defs RXMAX
+
+msg_on:     defb 13,10,'TERMD (directo) - ENTER+0 salir, ENTER+9 eco',13,10,'$'
+msg_eco_on: defb 13,10,'[eco local]',13,10,'$'
+msg_eco_off:defb 13,10,'[sin eco]',13,10,'$'
+msg_off:    defb 13,10,'TERMD: fin.',13,10,'$'
+
+            end  start

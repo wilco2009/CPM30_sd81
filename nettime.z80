@@ -22,6 +22,18 @@
 ;                 SIN comando MCU: es el control que aisla cuanto cuesta
 ;                 el comando lanzado desde dentro del XIOS.
 ;
+;    NETTIME C    la velocidad real del Z80, sin BDOS ni nada. Es la
+;                 referencia que faltaba: sin ella no se pueden traducir
+;                 los microsegundos a ciclos. Dio ~2,4 MHz.
+;
+;    NETTIME I    lo mismo pero con un IN por vuelta, para ver si una
+;                 operacion de puerto cuesta lo que dice el Z80 o mucho
+;                 mas. Salio normal: la E/S de puerto no es el problema.
+;
+;    NETTIME W    caracteres por segundo imprimiendo un punto.
+;    NETTIME N    lo mismo con un caracter que ?co descarta sin pintar.
+;                 La diferencia entre los dos es el coste de pintar.
+;
 ;    NETTIME R    bytes por segundo LEYENDO de AUX y tirandolos.
 ;                 Mide el camino BDOS + driver, sin pintar nada.
 ;
@@ -81,13 +93,23 @@ TDIV        equ  16         ; vueltas entre dos miradas al reloj
 start:      ld   a,(FCB+1)
             ld   (mode),a
             cp   'R'
-            jr   z,rx_go
+            jp   z,rx_go
             cp   'P'
-            jr   z,rx_go
+            jp   z,rx_go
             cp   'B'
-            jr   z,bd_go
+            jp   z,bd_go
             cp   'O'
-            jr   z,ao_go
+            jp   z,ao_go
+            cp   'C'
+            jp   z,cpu_go
+            cp   'I'
+            jp   z,io_go
+            cp   'T'
+            jp   z,t_go
+            cp   'W'
+            jp   z,w_go
+            cp   'N'
+            jp   z,n_go
 
 ; --- modo comando: cuanto cuesta un NET_READ vacio -------------------
             ld   de,msg_cmd
@@ -167,6 +189,152 @@ ao_16:      push bc
             jr   nc,ao_loop
             jp   report
 
+; ---------------------------------------------------------------------
+;  modo C: la velocidad REAL del Z80, sin BDOS, sin MCU, sin pantalla.
+;
+;  Todo el analisis de esta sesion traduce microsegundos a ciclos
+;  suponiendo 3,25 MHz. Si esa suposicion es falsa, las conclusiones lo
+;  son tambien -- y no se habia comprobado nunca.
+;
+;  El bucle interno es un djnz pelado: 13 ciclos por vuelta, 8 la ultima.
+;  Con B=0 son 256 vueltas, o sea 256*13-5 = 3323 ciclos por grupo, y de
+;  ahi sale la frecuencia:
+;
+;      MHz = cuenta * 3323 / 5 / 1.000.000
+;
+;  A 3,25 MHz la cuenta deberia salir alrededor de 1300 (0514h).
+; ---------------------------------------------------------------------
+cpu_go:     ld   de,msg_cpu
+            ld   c,F_PRINT
+            call BDOS
+            call t_start
+cpu_loop:   ld   b,0                ; 256 vueltas
+cpu_in:     djnz cpu_in
+            call bump
+            call t_done
+            jr   nc,cpu_loop
+            jp   report
+
+; ---------------------------------------------------------------------
+;  modo I: cuanto cuesta de verdad una operacion de puerto.
+;
+;  El modo C dio ~2,4 MHz: el Z80 va bien. Pero abaratar ?bank en ciclos
+;  no cambio el tiempo ni un digito, y cuando eso pasa es que el tiempo
+;  no se iba en ciclos. El sospechoso es el OUT de paginado: si el
+;  emulador lo resuelve recalculando el mapa de memoria por el lado del
+;  anfitrion, cuesta tiempo real que NO aparece como ciclos del Z80 -- y
+;  entonces quitar instrucciones alrededor no sirve de nada.
+;
+;  Aqui se mide con un IN al puerto de reloj, que es inofensivo (solo
+;  lee) y no toca el paginado. Comparado con el modo C:
+;
+;      el bucle de C son 3323 ciclos por grupo (djnz pelado)
+;      el de aqui son 6144 (in + djnz)
+;
+;  Asi que si la E/S de puerto fuera gratis, la cuenta deberia salir algo
+;  mas de la mitad que en C, sobre 0790h. Si sale MUCHO menor, cada
+;  operacion de puerto cuesta tiempo real de sobra para explicarlo todo,
+;  y el trabajo no esta en el Z80 sino en el emulador.
+; ---------------------------------------------------------------------
+io_go:      ld   de,msg_io
+            ld   c,F_PRINT
+            call BDOS
+            call t_start
+io_loop:    ld   b,0
+io_in:      in   a,(ClkPort)
+            djnz io_in
+            call bump
+            call t_done
+            jr   nc,io_loop
+            jp   report
+
+; ---------------------------------------------------------------------
+;  modos W y N: cuanto cuesta IMPRIMIR un caracter.
+;
+;  TERMD.COM quito del medio TODO el camino de lectura -- un solo comando
+;  MCU por cada 128 bytes, cero llamadas al BDOS -- y la velocidad no
+;  cambio. Asi que lo unico que queda en el bucle es imprimir.
+;
+;  La cuenta que hay que explicar: 38 bytes/s son 26 ms por caracter, o
+;  sea 85.000 ciclos. Escribir dos bytes en memoria de pantalla no cuesta
+;  eso ni de lejos, asi que o la cuenta esta mal o pasa algo mas.
+;
+;    W  imprime un punto: camino completo, con pintado.
+;    N  imprime un cero, que ?co descarta antes de pintar nada
+;       ("cp 20h / ret c"). Mide el camino SIN el pintado.
+;
+;  La diferencia entre los dos es lo que cuesta pintar de verdad. Si W y
+;  N salen parecidos, pintar es gratis y el coste esta en llegar hasta
+;  ?co; entonces hay que comparar con el modo O, que es otra llamada al
+;  BDOS que acaba en el XIOS pero sin tocar pantalla.
+;
+;  OJO: en W la pantalla se llena y hace scroll cada 80 caracteres. El
+;  scroll son dos LDIR de ~1944 bytes, unos 25 ms, que repartidos entre
+;  80 caracteres son 0,3 ms cada uno. Poco al lado de 26, pero conviene
+;  saberlo antes de interpretar el numero.
+; ---------------------------------------------------------------------
+; ---------------------------------------------------------------------
+;  modo T: comprobar el RELOJ, que es el instrumento de todo lo demas.
+;
+;  Hay dos sintomas que dicen que el cronometro no mide lo que creo:
+;  el modo C dio exactamente el mismo numero antes y despues de arreglar
+;  la espera al borde del segundo (tenia que haber subido hasta un 20%),
+;  y los modos N y W dieron cero con el bucle claramente ejecutandose.
+;
+;  Todo el cronometro se apoya en que la funcion 105 del BDOS devuelva
+;  los segundos en A. Si eso no es cierto en este sistema, ni una sola de
+;  las medidas de hoy vale nada -- asi que se comprueba directamente:
+;  se sondea la hora y se imprime cada valor NUEVO, ocho veces.
+;
+;  Lo que se espera ver: 00 01 02 03... en BCD, subiendo de uno en uno y
+;  a razon de uno por segundo. Cualquier otra cosa (valores repetidos,
+;  saltos, basura) explica de golpe todos los numeros raros.
+; ---------------------------------------------------------------------
+t_go:       ld   de,msg_clk
+            ld   c,F_PRINT
+            call BDOS
+            ld   b,8                ; ocho valores distintos
+            call getsec
+            ld   (lastsec),a
+tg_wait:    call getsec
+            ld   hl,lastsec
+            cp   (hl)
+            jr   z,tg_wait
+            ld   (hl),a
+            push bc
+            call put_hex
+            ld   e,' '
+            ld   c,F_CONOUT2
+            call BDOS
+            pop  bc
+            djnz tg_wait
+            ld   de,msg_nl
+            ld   c,F_PRINT
+            call BDOS
+            ld   c,F_RESET
+            jp   BDOS
+
+w_go:       ld   a,'.'
+            jr   wn_go
+n_go:       xor  a
+wn_go:      ld   (wn_char),a
+            ld   de,msg_wn
+            ld   c,F_PRINT
+            call BDOS
+            call t_start
+wn_loop:    ld   b,16
+wn_16:      push bc
+            ld   a,(wn_char)
+            ld   e,a
+            ld   c,F_CONIO
+            call BDOS
+            pop  bc
+            djnz wn_16
+            call bump
+            call t_done
+            jr   nc,wn_loop
+            jp   report
+
 ; --- modos R y P: drenar AUX y contar bytes --------------------------
 rx_go:      ld   de,msg_rx
             ld   c,F_PRINT
@@ -211,15 +379,30 @@ report:     ld   de,msg_res
 ;  t_start / t_done - el cronometro. t_done pone acarreo cuando se han
 ;  cumplido los SECONDS segundos.
 ; ---------------------------------------------------------------------
-t_start:    ld   hl,0
+;  ESPERAR AL BORDE DEL SEGUNDO NO ES OPCIONAL.
+;
+;  Si se empieza a contar a mitad de segundo, el primer cambio del campo
+;  de segundos llega enseguida: se miden poco mas de 4 segundos de
+;  trabajo y luego se divide entre 5. El error llega al 20% POR DEFECTO,
+;  y TODAS las cifras salen bajas.
+;
+;  La primera version de este programa si esperaba al borde; se perdio al
+;  refactorizar el cronometro, y por eso la medida de la CPU daba 2,4 MHz
+;  cuando las trazas del emulador dan 3,21 -- que es lo correcto.
+t_start:    call getsec
+            ld   (lastsec),a        ; en MEMORIA, no en un registro: por
+ts_edge:    call getsec             ; aqui pasan llamadas al BDOS
+            ld   hl,lastsec
+            cp   (hl)
+            jr   z,ts_edge          ; girar hasta el borde del segundo
+            ld   (lastsec),a
+            ld   hl,0
             ld   (count),hl
             ld   (empty),hl
             xor  a
             ld   (secs),a
             ld   a,TDIV
             ld   (tcnt),a
-            call getsec
-            ld   (lastsec),a
             ret
 
 ;  Convenio: vuelve con ACARREO PUESTO cuando se acabo el tiempo.
@@ -291,9 +474,18 @@ conout:     ld   a,e                ; imprime E sin tocarlo
 co_slow:    ld   c,F_CONOUT2
             jp   BDOS
 
-getsec:     ld   de,tbuf
+;  El push/pop NO es decorativo: aqui se pone C para la llamada y el
+;  BDOS destruye BC al volver. Sin esto, getsec se lleva por delante el
+;  contador de vueltas de quien la llama. Estaba en la primera version y
+;  se perdio al refactorizar el cronometro; el sintoma fue que el modo T
+;  no terminaba nunca y que la espera al borde del segundo no esperaba.
+getsec:     push bc
+            push de
+            ld   de,tbuf
             ld   c,F_TIME
             call BDOS               ; A = segundos, en BCD
+            pop  de
+            pop  bc
             ret
 
 put_hl:     ld   a,h
@@ -328,6 +520,12 @@ msg_cmd:    defb 13,10,'NETTIME: comandos MCU, 5 segundos...',13,10,'$'
 msg_rx:     defb 13,10,'NETTIME: bytes de AUX, 5 segundos...',13,10,'$'
 msg_bd:     defb 13,10,'NETTIME: llamadas BDOS, 5 segundos...',13,10,'$'
 msg_ao:     defb 13,10,'NETTIME: AUXOST (sin MCU), 5 segundos...',13,10,'$'
+msg_cpu:    defb 13,10,'NETTIME: velocidad del Z80, 5 segundos...',13,10,'$'
+msg_io:     defb 13,10,'NETTIME: E/S de puerto, 5 segundos...',13,10,'$'
+msg_wn:     defb 13,10,'NETTIME: salida a consola, 5 segundos...',13,10,'$'
+msg_clk:    defb 13,10,'NETTIME: reloj, 8 segundos...',13,10,'$'
+msg_nl:     defb 13,10,'$'
+wn_char:    defb 0
 msg_res:    defb 13,10,'cuenta: $'
 msg_emp:    defb '  sondeos en vacio: $'
 msg_tail:   defb 13,10,'(hexadecimal; divide entre 5)',13,10,'$'
