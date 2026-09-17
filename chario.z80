@@ -892,17 +892,48 @@ keymap_shift: ; SHIFT: mayusculas A-Z + funciones (0=borrar, 5/6/7/8=flechas Wor
             defb 'A','S','D','F','G'       ; A9
             defb 'Q','W','E','R','T'       ; A10
             defb 01Bh,000h,000h,000h,013h  ; A11: 1=ESC, 2-4 nada, 5=izq(^S)
-            defb 07Fh,000h,004h,005h,018h  ; A12: 0=DEL,9 nada,8=der(^D),7=arr(^E),6=abj(^X)
+            defb 07Fh,008h,004h,005h,018h  ; A12: 0=DEL,9=BS,8=der(^D),7=arr(^E),6=abj(^X)
             defb 'P','O','I','U','Y'       ; A13
             defb 00Dh,'L','K','J','H'      ; A14
-            defb ' ','.','M','N','B'       ; A15
+            defb ' ',009h,'M','N','B'      ; A15: .=TAB
+             ; SHIFT+9 = BS ($08), pegado al SHIFT+0 = DEL ($7F): las dos
+             ; teclas de borrar, juntas.
+             ;
+             ; No son dos funciones distintas. En ASCII no existe "borrar
+             ; a la derecha": BS retrocede el cursor y DEL es el "rubout"
+             ; de la cinta perforada (los 7 bits a uno = todos los
+             ; agujeros hechos = ignorame). En terminales los dos
+             ; acabaron significando lo mismo, borrar a la izquierda, y
+             ; que tecla manda cual depende del terminal -- de ahi el
+             ; "stty erase" de Unix. Por eso hacen falta los dos: es la
+             ; misma funcion que cada software remoto espera en un byte
+             ; distinto.
+             ;
+             ; SHIFT+. = TAB ($09). El punto esta al lado del espacio, y
+             ; un tabulador es un espacio grande; ademas SHIFT+. daba un
+             ; punto igual que sin SHIFT, o sea que no se pierde nada.
+             ;
+             ; Las dos se podian teclear ya con SHIFT+ENTER y luego H o I,
+             ; pero son dos pulsaciones y en un formulario de BBS se usan
+             ; constantemente.
 
-keymap_sym:  ; ENTER+tecla: simbolos serigrafiados ZX81
+keymap_sym:  ; ENTER+tecla: los simbolos serigrafiados del ZX81, mas los
+             ; que hay que inventarse. La serigrafia no llega a todo el
+             ; ASCII, y en una BBS se echa de menos: @ para el correo,
+             ; \ | ~ ` para cualquier cosa de Unix, y _ # % & ! para los
+             ; menus. Los que faltaban van en A9 (A S D F G), que estaba
+             ; entera sin usar, y en los huecos de A10-A12.
             defb 000h,':',';','?','/'      ; A8 : SHIFT Z X C V
-            defb 000h,000h,000h,000h,000h  ; A9
-            defb 027h,07Bh,07Dh,05Bh,000h  ; A10: Q=' W={ E=} R=[ (Pascal)
-            defb 000h,000h,000h,000h,000h  ; A11
-            defb 000h,000h,000h,000h,000h  ; A12
+            defb 000h,05Ch,000h,07Eh,060h  ; A9 : S=\ F=~ G=`
+            defb 027h,07Bh,07Dh,05Bh,05Fh  ; A10: Q=' W={ E=} R=[ T=_
+            defb '!',040h,'#',07Ch,'%'     ; A11: 1=! 2=@ 3=# 4=| 5=%
+            defb 01Dh,000h,000h,000h,'&'   ; A12: 0=^] (GS)  6=&
+             ; ENTER+0 = $1D. El modo CTRL (SHIFT+ENTER) saca la letra
+             ; AND $1F, asi que llega de ^A a ^Z y a NUL con el espacio,
+             ; pero $1B-$1F harian falta [ \ ] ^ _ en el mapa base, donde
+             ; solo hay letras y digitos. ESC se salva porque esta aparte
+             ; en SHIFT+1; ^] no tenia forma de teclearse, y es justo la
+             ; tecla de salida que espera TERM.COM (la de telnet).
             defb 022h,')','(','$',05Dh     ; A13: P=" O=) I=( U=$ Y=]
             defb 00Dh,'=','+','-',05Eh     ; A14: L== K=+ J=- H=^
             defb ' ',',','>','<','*'       ; A15: .=, M=> N=< B=*
