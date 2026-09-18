@@ -1,0 +1,115 @@
+; =====================================================================
+;  BORDER.Z80 - cambia el color del borde.
+;
+;  No es un ANSI ni pasa por chario.z80: es un registro de la FPGA
+;  aparte, el puerto $7FEF (SD81.v:397-407, "chroma_mode_reg"):
+;
+;      bit 5    color_enable (1 = modo color activo)
+;      bit 4    mode (0 = codigo de caracter, 1 = fichero de atributos)
+;      bit 3    brillo del borde
+;      bits 2-0 color del borde, formato GRB (igual que la tinta/papel
+;               de chario.z80 -- incluso la tabla de conversion es la
+;               misma, ver ansi2chroma)
+;
+;  OJO: EL PUERTO NO SE PUEDE LEER DE VUELTA. La lectura de $7FEF
+;  devuelve otra cosa (una bandera de capacidad, SD81.v:409-416), no el
+;  ultimo byte escrito. Asi que no hay forma de hacer "leer, cambiar
+;  solo el borde, escribir" -- hay que escribir el byte ENTERO cada vez,
+;  con color_enable y mode fijos a como los dejo "start" (system.z80),
+;  o se apagaria el color de toda la pantalla sin darse cuenta.
+;
+;  Uso:
+;      BORDER n      n = 0-7  (negro rojo verde amarillo azul magenta
+;                               cian blanco -- mismos numeros que SGR)
+;      BORDER n+8    n+8 = 8-15, el mismo color pero brillante
+;
+;  Sin argumento, o con uno que no se entienda, no hace nada -- mejor
+;  eso que adivinar y escribir un byte cualquiera en un puerto de video.
+; =====================================================================
+
+BDOS        equ  0005h
+F_RESET     equ  0
+
+TAIL_LEN    equ  0080h
+TAIL_TXT    equ  0081h
+
+CHROMA_PORT equ  07FEFh
+CHROMA_BASE equ  030h       ; color_enable=1, mode=1 -- lo que puso
+                             ; "start" (system.z80); estos dos bits NO
+                             ; se pueden averiguar leyendo el puerto,
+                             ; asi que van fijos aqui.
+
+            org  0100h
+
+start:      ld   hl,TAIL_TXT
+            ld   a,(TAIL_LEN)
+            or   a
+            jr   z,noarg
+            ld   c,a
+            ld   a,(hl)
+            cp   ' '                 ; espacio que separa "BORDER" del
+            jr   nz,parse            ; argumento
+            inc  hl
+            dec  c
+            ld   a,c
+            or   a
+            jr   z,noarg
+
+; --- leer un numero decimal de 1 o 2 digitos (0-15) -------------------
+parse:      xor  a
+            ld   d,a                 ; D = acumulador
+pdigit:     ld   a,(hl)
+            cp   '0'
+            jr   c,pdone             ; no es digito: parar
+            cp   '9'+1
+            jr   nc,pdone
+            sub  '0'
+            ld   e,a
+            ld   a,d
+            add  a,a
+            add  a,a
+            add  a,d
+            add  a,a                 ; D*10
+            add  a,e
+            ld   d,a
+            inc  hl
+            dec  c
+            jr   z,pdone
+            jr   pdigit
+pdone:      ld   a,d
+            cp   16
+            jr   nc,noarg            ; fuera de rango (0-15): no hacer nada
+
+; --- D (0-15) -> byte del registro chroma ------------------------------
+            ld   a,d
+            and  8                  ; bit de brillo (8-15 -> brillante):
+                                     ; D ya lo trae en el bit 3, y el
+                                     ; registro de la FPGA tambien lo
+                                     ; quiere ahi -- no hace falta mover
+                                     ; nada (un descuido de la primera
+                                     ; version desplazaba esto CUATRO
+                                     ; veces con rrca y lo sacaba por el
+                                     ; otro lado hasta el bit 7, que
+                                     ; tiene que quedarse a cero)
+            ld   e,a                ; E = brillo ya colocado
+            ld   a,d
+            and  7                  ; color 0-7
+            ld   hl,ansi_ctab
+            ld   b,0
+            ld   c,a
+            add  hl,bc
+            ld   a,(hl)              ; A = color en formato hardware (GRB)
+            or   e
+            or   CHROMA_BASE
+            ld   bc,CHROMA_PORT
+            out  (c),a
+            ret
+
+noarg:      ld   c,F_RESET
+            jp   BDOS
+
+; Misma tabla que ansi2chroma en chario.z80: ANSI 0-7 (negro rojo verde
+; amarillo azul magenta cian blanco) -> color de hardware (formato GRB).
+ansi_ctab:  defb 0,2,4,6,1,3,5,7
+
+            end  start

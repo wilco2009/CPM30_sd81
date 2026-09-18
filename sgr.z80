@@ -1,0 +1,97 @@
+; =====================================================================
+;  SGR.Z80 - cambia papel/tinta desde el CCP, mandando la secuencia
+;  ANSI SGR directamente.
+;
+;  Uso:
+;      SGR 1;33;44     -> ESC[1;33;44m  (tinta amarilla brillante,
+;                          papel azul)
+;      SGR 0           -> ESC[0m  (reset a los colores de por defecto)
+;      SGR             -> lo mismo que "SGR 0"
+;
+;  Los parametros son exactamente lo que entiende ansi_sgr en
+;  chario.z80 -- este programa no valida nada, se limita a envolverlos
+;  entre "ESC[" y "m" y mandarlos a la consola:
+;
+;      0        reset (papel/tinta de la pantalla)
+;      1        brillo en la TINTA (no hay equivalente para el papel)
+;      30-37    color de tinta:  30 negro 31 rojo 32 verde 33 amarillo
+;                                 34 azul 35 magenta 36 cian 37 blanco
+;      40-47    color de papel, misma tabla +10
+;
+;  Varios juntos con ';' se aplican en orden, igual que en cualquier
+;  terminal ANSI: "SGR 1;33;44" pone brillo Y tinta Y papel de una vez.
+;
+;  POR QUE LA 'm' FINAL LA PONE EL PROGRAMA, NO SE TECLEA
+;
+;  El CCP pasa la linea de comandos a mayusculas antes de guardarla. Si
+;  "m" se tecleara como parte del argumento, llegaria como "M", y
+;  ansi_end (chario.z80) compara contra la 'm' minuscula exacta -- la
+;  secuencia se habria tragado entera sin hacer nada, en silencio (asi
+;  tiene que comportarse un terminal ante algo que no reconoce). Por eso
+;  aqui la 'm' la escribe el programa, no el usuario: nunca pasa por el
+;  CCP y siempre llega en minuscula.
+;
+;  Los digitos y ';' no tienen mayuscula/minuscula, asi que a esos les
+;  da igual.
+; =====================================================================
+
+BDOS        equ  0005h
+F_PRINT     equ  9
+
+TAIL_LEN    equ  0080h      ; cuantos caracteres se tecleron tras "SGR"
+TAIL_TXT    equ  0081h      ; ...y aqui empiezan, con un espacio delante
+
+BUFSZ       equ  40         ; ESC + '[' + hasta 36 de parametros + 'm' + '$'
+
+            org  0100h
+
+start:      ld   hl,TAIL_TXT
+            ld   a,(TAIL_LEN)
+            or   a
+            jr   z,build            ; "SGR" a secas: cola vacia -> ESC[m
+            ld   c,a                ; C = cuantos hay que copiar
+            ld   a,(hl)              ; el primero suele ser el espacio que
+            cp   ' '                 ; separa "SGR" del argumento
+            jr   nz,noskip
+            inc  hl
+            dec  c
+noskip:     ld   a,c
+            or   a
+            jr   z,build             ; solo habia el espacio: igual que vacio
+
+; Acotar C ANTES de copiar -- no dentro del bucle, que comparaba lo que
+; QUEDABA por copiar contra el maximo y por eso se rendia entero con una
+; cola larga en vez de copiar los primeros BUFSZ-4 bytes que si caben.
+            cp   BUFSZ-4
+            jr   c,copy
+            ld   c,BUFSZ-4           ; una barbaridad tecleada: se corta,
+                                     ; mejor una secuencia rara que
+                                     ; desbordar el bufer
+
+; --- copiar los parametros tal cual al bufer ---------------------------
+copy:       ld   de,buf+2
+cp_loop:    ld   a,(hl)
+            ld   (de),a
+            inc  hl
+            inc  de
+            dec  c
+            jr   nz,cp_loop
+            jr   term
+
+build:      ld   de,buf+2            ; sin parametros: ESC[m directo
+
+term:       ld   a,'m'
+            ld   (de),a
+            inc  de
+            ld   a,'$'
+            ld   (de),a
+
+            ld   de,buf
+            ld   c,F_PRINT
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+buf:        defb 01Bh, '['       ; ESC [ -- el resto se rellena en runtime
+            defs BUFSZ-2
+
+            end  start

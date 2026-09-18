@@ -1,0 +1,231 @@
+; =====================================================================
+;  TERMB.Z80 - terminal EXPERIMENTAL que llama al BIOS CONOUT
+;  directamente, sin pasar ni por BDOS ni por RESBDOS.
+;
+;  TERCER PELDAÑO de la escalera de aislamiento, despues de TERM y
+;  TERMD. La pregunta que contesta: de los ~5 ms/byte que se pierden,
+;  ¿cuanto es "cruzar al BDOS" y cuanto es "lo que hace el propio XIOS
+;  al imprimir"?
+;
+;      TERM   AUXIST+AUXIN (BDOS) por byte + bloque via funcion 111
+;      TERMD  MCU directo (0 BDOS) + bloque via funcion 111
+;      TERMB  MCU directo (0 BDOS) + CONOUT del BIOS directo (0 BDOS)
+;
+;  TERMD ya demostro que el lado de LECTURA no es el problema: "va algo
+;  mas rapido, pero sigue lento". Eso deja la SALIDA como sospechosa --
+;  pero la funcion 111 (ver rb$blk$out en RESBDOS.ASM) NO evita el coste
+;  por caracter: por cada uno vuelve a llamar a conoutf, que es la MISMA
+;  cadena que usaria una llamada suelta. Lo unico que ahorra la 111 es
+;  la entrada/salida del BDOS por caracter, no el trabajo de dentro.
+;
+;  TERMB quita tambien eso: llama al vector CONOUT del BIOS, en la tabla
+;  publica de DRI (BIOSTBL = bios$pg = $FF00; CONOUT es la entrada 4,
+;  o sea $FF0C -- "conoutf equ bios$pg+12" en RESBDOS.ASM lo confirma
+;  como contrato, no como detalle interno). Esa tabla la ve el banco 7
+;  siempre, y sus destinos (la zona duplicada) los ven los dos bancos,
+;  asi que es alcanzable desde la TPA sin million de vueltas.
+;
+;  "CALL $FF0C" con C=caracter llama a "?cono: ld hl,conout / jmp biosw"
+;  (bank.z80), que hace el cambio de banco y entra en conout(BIOSKRNL) ->
+;  out$scan -> coster -> ?co(chario.z80). Es EXACTAMENTE la misma cadena
+;  que usan TERM y TERMD por debajo -- lo que cambia es que aqui no hay
+;  NADA de BDOS.ASM ni RESBDOS.ASM en medio, en ninguna direccion.
+;
+;  COMO LEER EL RESULTADO (comparando con TERMD, no con NETTIME)
+;
+;  La comparacion que importa es contra una traza del EMULADOR
+;  (net_bridge.cpp, NET_TRACE), no contra un cronometro escrito en Z80 --
+;  esta sesion ha encontrado demasiados bugs en cronometros propios como
+;  para fiarse de otro mas. Conectar con TERMB, pedir lo mismo que se
+;  pidio con TERMD, y comparar el tiempo entre comandos NET_READ:
+;
+;      si baja MUCHO respecto a TERMD -> el coste estaba en cruzar al
+;          BDOS/RESBDOS (bdose, rb$blk$out, el cambio a lstack...)
+;      si se queda IGUAL que TERMD    -> el coste esta dentro de
+;          conout/coster/?co -- biosw, el parser ANSI, print_glyph,
+;          char_addr, scroll -- y ahi es donde hay que seguir mirando,
+;          con instrumentacion del EMULADOR (T-states entre dos PC),
+;          no con otro programa de prueba en Z80.
+;
+;  NO usa AUX ni CP/M para nada salvo el teclado (funcion 6, que no es
+;  sospechosa y no hace falta quitarla de en medio). No es el terminal
+;  definitivo, es la tercera pregunta de la escalera.
+; =====================================================================
+
+BDOS        equ  0005h
+
+F_RESET     equ  0
+F_CONIO     equ  6
+
+CIO_STAT    equ  0FEh
+CIO_IN      equ  0FDh
+
+DataPort    equ  0A7h
+ClkPort     equ  0AFh
+CMD_NET_RD  equ  66
+CMD_NET_WR  equ  67
+
+RXMAX       equ  128
+
+EXITKEY     equ  01Dh       ; ENTER+0
+ECHOKEY     equ  01Ch       ; ENTER+9
+
+; La tabla publica de DRI (loader.z80): 33 "jp" de 3 bytes, empezando en
+; BIOSTBL=$FF00. CONOUT es la entrada 4 -> $FF00 + 4*3 = $FF0C. Fija
+; para cualquier build de este sistema -- a diferencia de la direccion
+; interna de "?cono", que se mueve si cambia bank.z80.
+BIOS_CONOUT equ  0FF0Ch
+
+            org  0100h
+
+start:      ld   de,msg_on
+            ld   c,9
+            call BDOS
+
+loop:       ld   hl,rxbuf
+            ld   b,RXMAX
+            call net_read           ; B = cuantos ha traido de verdad
+            ld   a,b
+            or   a
+            jr   z,do_kbd
+            ld   c,a                 ; C = cuantos quedan por imprimir
+            ld   hl,rxbuf
+pr_loop:    ld   a,(hl)
+            push hl
+            push bc
+            ld   c,a
+            call BIOS_CONOUT         ; CONOUT del BIOS -- sin BDOS de por medio
+            pop  bc
+            pop  hl
+            inc  hl
+            dec  c
+            jr   nz,pr_loop
+
+do_kbd:     ld   c,F_CONIO
+            ld   e,CIO_STAT
+            call BDOS
+            or   a
+            jr   z,loop
+            ld   c,F_CONIO
+            ld   e,CIO_IN
+            call BDOS
+            cp   EXITKEY
+            jr   z,done
+            cp   ECHOKEY
+            jr   z,do_echo
+            ld   (txbyte),a
+            ld   hl,txbyte
+            ld   b,1
+            call net_write
+            ld   a,(localecho)
+            or   a
+            jr   z,loop
+            ld   a,(txbyte)          ; RECARGAR: el "ld a,(localecho)" de
+                                     ; arriba dejo en A el interruptor
+                                     ; (0/1), no la tecla -- con eco
+                                     ; encendido eso es 1 ($01, ^A), que
+                                     ; ?co descarta por ser de control.
+                                     ; Cada tecla se "imprimia" como un
+                                     ; no-operacion, siempre invisible.
+            ld   c,a                 ; reusar la salida directa tambien
+            call BIOS_CONOUT         ; para el eco
+            cp   00Dh
+            jr   nz,loop
+            ld   c,00Ah
+            call BIOS_CONOUT
+            jr   loop
+
+do_echo:    ld   a,(localecho)
+            xor  1
+            ld   (localecho),a
+            ld   de,msg_eco_on
+            or   a
+            jr   nz,de_say
+            ld   de,msg_eco_off
+de_say:     ld   c,9
+            call BDOS
+            jr   loop
+
+done:       ld   de,msg_off
+            ld   c,9
+            call BDOS
+            ld   c,F_RESET
+            jp   BDOS
+
+; ---------------------------------------------------------------------
+;  net_read / net_write - identicas a las de net.z80/termd.z80.
+; ---------------------------------------------------------------------
+net_read:   push hl
+            ld   d,b
+            call sd_clk
+            ld   a,CMD_NET_RD
+            call mcu_send
+            ld   a,d
+            call mcu_send           ; max
+            call mcu_recv
+            ld   b,a                ; count
+            ld   d,a                ; copia a salvo (C es el reloj)
+            or   a
+            jr   z,nr_tail
+nr_loop:    call mcu_recv
+            ld   (hl),a
+            inc  hl
+            djnz nr_loop
+nr_tail:    call mcu_recv           ; avail
+            call mcu_recv           ; status
+            ld   b,d
+            pop  hl
+            ret
+
+net_write:  call sd_clk
+            ld   a,CMD_NET_WR
+            call mcu_send
+            ld   a,b
+            call mcu_send           ; count
+            ld   a,b                ; RECARGAR: mcu_send se come A
+            or   a
+            jr   z,nw_tail
+nw_loop:    ld   a,(hl)
+            call mcu_send
+            inc  hl
+            djnz nw_loop
+nw_tail:    call mcu_recv           ; aceptados
+            ld   b,a
+            call mcu_recv           ; status
+            ret
+
+sd_clk:     in   a,(ClkPort)
+            ld   c,a
+            ret
+
+mcu_send:   out  (DataPort),a
+            ld   a,c
+            cpl
+            ld   c,a
+ms_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,ms_w
+            ret
+
+mcu_recv:   in   a,(DataPort)
+            push af
+            ld   a,c
+            cpl
+            ld   c,a
+mr_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,mr_w
+            pop  af
+            ret
+
+; ---------------------------------------------------------------------
+txbyte:     defb 0
+localecho:  defb 0
+rxbuf:      defs RXMAX
+
+msg_on:     defb 13,10,'TERMB (BIOS directo) - ENTER+0 salir, ENTER+9 eco',13,10,'$'
+msg_eco_on: defb 13,10,'[eco local]',13,10,'$'
+msg_eco_off:defb 13,10,'[sin eco]',13,10,'$'
+msg_off:    defb 13,10,'TERMB: fin.',13,10,'$'
+
+            end  start

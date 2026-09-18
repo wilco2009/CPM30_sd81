@@ -1,0 +1,24 @@
+; =====================================================================
+;  CLS.Z80 - borra la pantalla.
+;
+;  No hay comando CLS en CP/M 3 de fabrica, y $1A (^Z) TECLEADO no borra
+;  nada -- solo lo hace cuando se IMPRIME, porque es con(chario.z80)
+;  quien lo interpreta ("cp 01Ah / jp z,cls"), y eso solo pasa en la
+;  salida, nunca en la entrada. De ahi que haga falta un programa que lo
+;  emita, por pequeno que sea.
+;
+;  Un solo byte, una sola llamada. Funciona igual en la consola local
+;  que -- si algun dia AUX vuelve a pasar por el emulador de terminal --
+;  en cualquier otra salida que use el mismo chario.z80.
+; =====================================================================
+
+BDOS    equ  0005h
+F_CONOUT2 equ 2
+
+            org  0100h
+
+start:      ld   e,01Ah         ; ^Z: con_co lo interpreta como cls+home
+            ld   c,F_CONOUT2
+            jp   BDOS
+
+            end  start

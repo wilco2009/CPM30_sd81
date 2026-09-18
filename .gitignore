@@ -12,6 +12,7 @@ Desktop.ini
 
 # trazas de depuracion, no son fuente
 traza.txt
+traza*.txt
 
 # FONT.BIN NO es una salida de ensamblado: es una FUENTE (el juego de
 # caracteres ASCII de 7 px de ancho que genfont.py mezcla con el atlas

@@ -1,75 +1,90 @@
 ; =====================================================================
-;  TERM.Z80 - terminal minimo sobre el dispositivo logico AUX, con
-;  volcado opcional a fichero.
+;  TERM.Z80 - terminal para el puente de red, con volcado opcional a
+;  fichero.
 ;
-;  No sabe nada de red: habla con AUX: y punto. Quien decide que hay al
-;  otro lado es el "DEVICE AUX:=NET" que se haya hecho antes. Por eso
-;  esto mismo valdria contra un puerto serie de verdad el dia que lo
-;  haya -- y por eso sirve de prueba del driver: todo lo que teclees
-;  recorre auxout -> @aovec -> ?co con B=1 -> net_write -> comando 67.
+;  Habla con el MCU directamente (comandos 66/67), sin AUX:, sin BDOS,
+;  sin RESBDOS. Es una decision deliberada, no un descuido:
+;
+;  La version anterior pasaba por AUX: (funciones 7/3 del BIOS, AUXIST/
+;  AUXIN) para respetar "DEVICE AUX:=NET" y poder valer, en teoria, para
+;  cualquier cosa que se asignara a AUX. Pero AUXIST/AUXIN son rutinas de
+;  BIOSKRNL.ASM, y BIOSKRNL.ASM vive en memoria BANCADA -- para poder
+;  siquiera EJECUTAR esas instrucciones hace falta "sistema" activo, sin
+;  importar a que dispositivo llamen luego por dentro. Eso son DOS
+;  cruces de banco (biosw completo, ida y vuelta) por cada byte leido,
+;  ademas del que ya hace falta para imprimir. Medido: ~195-400 B/s
+;  contra los ~1100 B/s de hablar con el MCU a pelo.
+;
+;  No hay componenda que evite esto y seguir siendo generico: la propia
+;  abstraccion (poder hablar con "lo que sea que este en AUX") ES lo que
+;  obliga a pasar por BIOSKRNL. Duplicar las primitivas de net.z80 en la
+;  zona comun no arregla nada -- el cambio de banco no es por net.z80,
+;  es por auxist/auxin mismas.
+;
+;  Asi que la eleccion es binaria: generico y lento, o NET y rapido. Se
+;  elige rapido, a proposito, porque para eso es este programa. Si algun
+;  dia hace falta un terminal que valga con cualquier dispositivo AUX
+;  (un puerto serie de verdad, por ejemplo), sera OTRO programa -- el
+;  coste de la generalidad no tiene por que pagarlo el que solo necesita
+;  hablar con NET.
 ;
 ;  Uso:
-;      DEVICE AUX:=NET
 ;      TERM            <- terminal a secas
-;      TERM LOG.BIN    <- ademas, guarda TODO lo que llega por AUX
+;      TERM LOG.BIN    <- ademas, guarda TODO lo que llega
 ;
-;  Se sale con la tecla de EXITKEY (ver abajo).
+;  Se sale con la tecla de EXITKEY (ver abajo). NO hace falta "DEVICE
+;  AUX:=NET": este programa no usa AUX para nada.
 ;
-;  CADA CUANTO SE MIRA EL TECLADO
+;  LAS CUATRO PRIMITIVAS DEL MCU
 ;
-;  La primera version vaciaba AUX entera antes de mirar el teclado,
-;  razonando que los datos llegan a rafagas y el teclado puede esperar.
-;  Es falso: pintar 80 columnas en un Z80 a 3,25 MHz es mas lento de lo
-;  que escupe una BBS, asi que AUX no se vacia nunca y el teclado no se
-;  lee JAMAS. Sintoma: la BBS pregunta algo, no puedes contestar, y
-;  acaba colgando por inactividad.
+;  net_read/net_write y sus tres ayudantes (sd_clk/mcu_send/mcu_recv)
+;  son identicas a las de net.z80 -- mismo protocolo, mismas trampas del
+;  handshake (C es el reloj, A no sobrevive a mcu_send). Estan
+;  duplicadas aqui, no compartidas con net.z80/chario.z80: este programa
+;  vive en la TPA y esas viven en el banco de sistema, en direcciones
+;  que no son las mismas en los dos contextos.
 ;
-;  La correccion fue mirarlo en cada vuelta, y eso se paso al otro lado:
-;  cada mirada es un escaneo completo de la matriz mas el ida y vuelta al
-;  BDOS con su cambio de banco, y se pagaba POR CADA CARACTER RECIBIDO.
-;  Con una BBS pintando arte ANSI a pantalla completa, eso pesa.
+;  net_read pide hasta 128 bytes de una, el bufer entero del MCU: un
+;  comando por rafaga en vez de uno por byte. net_write manda la tecla
+;  en el momento, sin acumular -- para una tecla suelta no compensa.
 ;
-;  El punto medio es mirarlo cada KBEVERY caracteres, y ademas SIEMPRE
-;  que AUX se quede vacia. Con 8, a la velocidad a la que entran los
-;  datos el teclado se sondea decenas de veces por segundo -- de sobra
-;  para no perder una pulsacion -- y se ahorran siete de cada ocho.
+;  LA IMPRESION TAMPOCO PASA POR EL BDOS
+;
+;  BIOS_CONOUT es la entrada CONOUT de la tabla publica de DRI
+;  (loader.z80, bios$tbl -> BIOSTBL=$FF00; CONOUT es la entrada 4, o sea
+;  $FF0C -- lo confirma el contrato de RESBDOS.ASM, "conoutf equ
+;  bios$pg+12"). Vive en banco 7 (comun) y salta a la zona duplicada,
+;  que cambia a "sistema" y llama al conout de verdad. Es la misma
+;  tecnica que usan WordStar y Turbo Pascal para ir rapido en consola.
+;
+;  De regalo, no hay reserva de 0FDh-0FFh (la que tenia la funcion 6 del
+;  BDOS, por multiplexar "caracter" y "peticion de entrada" en el mismo
+;  registro): esos tres bytes -- zona alta de CP437 -- se imprimen igual
+;  que cualquier otro.
 ;
 ;  EL VOLCADO
 ;
 ;  Guarda los bytes crudos, sin filtrar ni traducir: es para ver que
 ;  secuencias de escape manda la otra punta y cuales no entendemos. El
 ;  nombre sale del FCB que el propio CP/M ya ha rellenado en $005C con
-;  el primer argumento, asi que no hay que parsear nada.
+;  el primer argumento, asi que no hay que parsear nada. Arranca APAGADO
+;  aunque se haya dado nombre de fichero (ENTER+8 para encenderlo): lo
+;  que interesa diagnosticar suele estar al final de la sesion, detras
+;  de kilobytes de arte ANSI que no aportan nada.
 ;
 ;  AVISO: escribir en disco lleva su tiempo, y mientras tanto no se lee
-;  de AUX. El bufer del MCU son 2 KB, asi que en una rafaga larga se
-;  pueden perder bytes -- justo despues de un registro escrito. Para
-;  diagnosticar secuencias de escape da igual, pero no te fies del
-;  volcado como copia fiel de una descarga.
-;
-;  POR QUE NO SE USA LA FUNCION 2 PARA IMPRIMIR
-;
-;  La 2 expande tabuladores y mira si has pulsado ^S. Las dos cosas
-;  estropean una sesion ANSI: el tabulador descoloca el arte y el ^S
-;  congela la pantalla mientras la BBS sigue mandando. La 6 (E/S directa
-;  de consola) no hace ninguna de las dos.
-;
-;  El pero de la 6 es que reserva E = 0FDh, 0FEh y 0FFh para pedir
-;  entrada, asi que esos tres codigos no se pueden imprimir con ella.
-;  Son raros pero no imposibles (el arte CP437 usa la zona alta), asi
-;  que para esos tres se cae a la funcion 2, donde ni el tabulador ni el
-;  ^S aplican porque ninguno de los tres es uno de ellos.
+;  del MCU. El bufer de entrada del MCU son 2 KB, asi que en una rafaga
+;  larga se pueden perder bytes -- justo despues de un registro escrito.
+;  Para diagnosticar secuencias de escape da igual, pero no te fies del
+;  volcado como copia fiel de una descarga completa.
 ; =====================================================================
 
 BDOS        equ  0005h
 FCB         equ  005Ch      ; el CP/M ya ha metido aqui el primer argumento
 
 F_RESET     equ  0          ; volver al CCP
-F_CONOUT2   equ  2          ; salida de consola, solo para 0FDh-0FFh
-F_AUXIN     equ  3          ; leer de AUX (bloquea)
-F_AUXOUT    equ  4          ; escribir en AUX (bloquea hasta que acepte)
-F_CONIO     equ  6          ; E/S directa de consola
-F_AUXIST    equ  7          ; estado de entrada de AUX (CP/M 3)
+F_CONOUT2   equ  2          ; solo la usa put_hex, para el codigo de error
+F_CONIO     equ  6          ; E/S directa de consola (solo teclado aqui)
 F_PRINT     equ  9          ; imprimir cadena terminada en el dolar
 F_CLOSE     equ  16
 F_DELETE    equ  19
@@ -80,15 +95,29 @@ F_DMA       equ  26
 CIO_STAT    equ  0FEh       ; ...E=0FEh -> 0FFh si hay tecla
 CIO_IN      equ  0FDh       ; ...E=0FDh -> leer tecla (bloquea)
 
+DataPort    equ  0A7h
+ClkPort     equ  0AFh
+CMD_NET_RD  equ  66
+CMD_NET_WR  equ  67
+
+RXMAX       equ  128        ; lo que cabe en un solo NET_READ
+
+; La entrada CONOUT de la tabla publica de DRI. Ver la nota de la
+; cabecera. $FF00 (BIOSTBL) + 4*3 (CONOUT es la quinta entrada, index 4,
+; de 3 bytes cada una) = $FF0C. Fija para cualquier build de este
+; sistema -- BIOSTBL es un contrato estable, a diferencia de las
+; direcciones internas de bank.z80, que se mueven si el fichero cambia.
+BIOS_CONOUT equ  0FF0Ch
+
 ; Tecla de salida. ^] es el estandar de telnet, pero si en el teclado
 ; del ZX81 no hay forma comoda de teclearla, cambia este valor por algo
 ; que si se pueda -- teniendo en cuenta que esa tecla deja de poder
-; mandarse a la BBS.
+; mandarse al otro lado.
 EXITKEY     equ  01Dh       ; Ctrl-]   (ENTER+0 en el teclado del ZX81)
 
 ; Conmutador de eco local (el "duplex" de toda la vida).
 ;
-; Una BBS hace eco remoto de lo que tecleas, asi que con eco local
+; El otro lado hace eco remoto de lo que tecleas, asi que con eco local
 ; permanente verias cada letra dos veces. Pero antes de conectar no hay
 ; nadie al otro lado que haga el eco, y se teclea el ATDT a ciegas. De
 ; ahi que sea un conmutador y no una opcion fija, igual que en todos los
@@ -103,14 +132,8 @@ EXITKEY     equ  01Dh       ; Ctrl-]   (ENTER+0 en el teclado del ZX81)
 ; AT al otro lado.
 ECHOKEY     equ  01Ch       ; Ctrl-\   (ENTER+9)
 
-; Conmutador del volcado. Arranca APAGADO aunque se haya dado nombre de
-; fichero: lo que interesa diagnosticar suele estar al final de la
-; sesion, detras de kilobytes de arte ANSI que no aportan nada. Con esto
-; dejas pasar la portada, enciendes justo antes del trozo bueno, y el
-; fichero sale corto y legible.
+; Conmutador del volcado. Ver la nota de la cabecera.
 LOGKEY      equ  01Eh       ; Ctrl-^   (ENTER+8)
-
-KBEVERY     equ  8          ; caracteres de AUX entre miradas al teclado
 
             org  0100h
 
@@ -120,29 +143,31 @@ start:      ld   de,msg_on
             call log_open
 
 ; ---------------------------------------------------------------------
-;  Bucle principal. Las dos direcciones se atienden por sondeo, nunca
-;  bloqueando: si se llamara a AUXIN a pelo, el terminal se quedaria
-;  dentro esperando a la BBS y no leeria el teclado. Para eso esta la
-;  funcion 7, que CP/M 3 anadio justamente para esto.
+;  Bucle principal. Cada vuelta pide hasta 128 bytes de una (un unico
+;  comando MCU), los imprime, y mira el teclado -- todo sin bloquear en
+;  ninguna direccion.
 ; ---------------------------------------------------------------------
-loop:       ld   c,F_AUXIST         ; hay algo de la BBS?
-            call BDOS
+loop:       ld   hl,rxbuf
+            ld   b,RXMAX
+            call net_read           ; B = cuantos ha traido de verdad
+            ld   a,b
             or   a
-            jr   z,do_kbd
-            ld   c,F_AUXIN          ; si: traerlo (ya sabemos que no bloquea)
-            call BDOS
+            jr   z,do_kbd           ; nada: directo al teclado
+            ld   c,a                 ; C = cuantos quedan por imprimir/grabar
+            ld   hl,rxbuf
+pr_loop:    ld   a,(hl)
+            push hl
+            push bc
             ld   (rxbyte),a
-            ld   e,a
-            call conout
+            ld   c,a
+            call BIOS_CONOUT         ; imprimir SIN pasar por el BDOS
             ld   a,(rxbyte)
             call log_byte
-            ld   a,(kbdiv)          ; toca mirar el teclado? Ver la cabecera.
-            dec  a
-            ld   (kbdiv),a
-            jr   z,kb_now
-            jp   loop
-kb_now:     ld   a,KBEVERY
-            ld   (kbdiv),a
+            pop  bc
+            pop  hl
+            inc  hl
+            dec  c
+            jr   nz,pr_loop
 
 do_kbd:     ld   c,F_CONIO          ; hay tecla?
             ld   e,CIO_STAT
@@ -159,19 +184,19 @@ do_kbd:     ld   c,F_CONIO          ; hay tecla?
             cp   LOGKEY
             jr   z,do_log
             ld   (txbyte),a
-            ld   e,a
-            ld   c,F_AUXOUT         ; mandarla por el tubo
-            call BDOS
+            ld   hl,txbyte
+            ld   b,1
+            call net_write          ; mandarla, tambien sin pasar por CP/M
             ld   a,(localecho)
             or   a
             jr   z,loop
             ld   a,(txbyte)         ; y, si toca, pintarla aqui tambien
-            ld   e,a
-            call conout
+            ld   c,a
+            call BIOS_CONOUT
             cp   00Dh               ; al otro lado va solo el CR, pero en
             jr   nz,loop            ; pantalla hace falta el LF o se
-            ld   e,00Ah             ; reescribe encima de la misma linea
-            call conout
+            ld   c,00Ah             ; reescribe encima de la misma linea
+            call BIOS_CONOUT
             jp   loop
 
 ; --- conmutar el eco local, y decir como ha quedado -------------------
@@ -209,15 +234,74 @@ done:       call log_close
             jp   BDOS
 
 ; ---------------------------------------------------------------------
-;  conout - imprime E sin tocarlo. Ver la nota de la cabecera.
+;  net_read  - lee hasta B bytes en (HL). Devuelve B = leidos.
+;  net_write - envia B bytes desde (HL). Devuelve B = aceptados.
+;
+;  Identicas a las de net.z80. Ver la nota de la cabecera sobre C (el
+;  reloj del handshake) y A (no sobrevive a mcu_send).
 ; ---------------------------------------------------------------------
-conout:     ld   a,e
-            cp   CIO_IN             ; 0FDh, 0FEh y 0FFh no caben en la 6
-            jr   nc,co_slow
-            ld   c,F_CONIO
-            jp   BDOS
-co_slow:    ld   c,F_CONOUT2
-            jp   BDOS
+net_read:   push hl
+            ld   d,b
+            call sd_clk
+            ld   a,CMD_NET_RD
+            call mcu_send
+            ld   a,d
+            call mcu_send           ; max
+            call mcu_recv
+            ld   b,a                ; count
+            ld   d,a                ; copia a salvo (C es el reloj)
+            or   a
+            jr   z,nr_tail
+nr_loop:    call mcu_recv
+            ld   (hl),a
+            inc  hl
+            djnz nr_loop
+nr_tail:    call mcu_recv           ; avail
+            call mcu_recv           ; status (se ignora, ver net.z80)
+            ld   b,d
+            pop  hl
+            ret
+
+net_write:  call sd_clk
+            ld   a,CMD_NET_WR
+            call mcu_send
+            ld   a,b
+            call mcu_send           ; count
+            ld   a,b                ; RECARGAR: mcu_send se ha comido A
+            or   a
+            jr   z,nw_tail
+nw_loop:    ld   a,(hl)
+            call mcu_send
+            inc  hl
+            djnz nw_loop
+nw_tail:    call mcu_recv           ; aceptados
+            ld   b,a
+            call mcu_recv           ; status
+            ret
+
+sd_clk:     in   a,(ClkPort)
+            ld   c,a
+            ret
+
+mcu_send:   out  (DataPort),a
+            ld   a,c
+            cpl
+            ld   c,a
+ms_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,ms_w
+            ret
+
+mcu_recv:   in   a,(DataPort)
+            push af
+            ld   a,c
+            cpl
+            ld   c,a
+mr_w:       in   a,(ClkPort)
+            xor  c
+            jp   m,mr_w
+            pop  af
+            ret
 
 ; ---------------------------------------------------------------------
 ;  log_open - si hay nombre en el FCB, crea el fichero. Si no lo hay, o
@@ -327,7 +411,6 @@ lc_shut:    ld   de,FCB
             jp   BDOS
 
 ; ---------------------------------------------------------------------
-kbdiv:      defb 1                  ; cuenta atras hasta la proxima mirada
 rxbyte:     defb 0                  ; el byte que se acaba de recibir
 txbyte:     defb 0                  ; ...y el que se acaba de teclear
 localecho:  defb 0                  ; 1 = eco local (media duplex)
@@ -335,6 +418,7 @@ logging:    defb 0                  ; 1 = hay fichero abierto y utilizable
 logrec:     defb 0                  ; 1 = grabando ahora mismo (LOGKEY)
 logcnt:     defb 0                  ; bytes ya metidos en el registro
 logbuf:     defs 128
+rxbuf:      defs RXMAX
 
 msg_on:     defb 13,10,'TERM - con ENTER: 0 salir, 9 eco, 8 log',13,10,'$'
 msg_log_on: defb 13,10,'[grabando]',13,10,'$'
