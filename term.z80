@@ -35,6 +35,12 @@
 ;  Se sale con la tecla de EXITKEY (ver abajo). NO hace falta "DEVICE
 ;  AUX:=NET": este programa no usa AUX para nada.
 ;
+;  ESTE FICHERO SIGUE telnet_to_cpm_term.md (SD81-Booster, carpeta
+;  claude/planning): las seis mejoras que salieron de probar el mismo
+;  diseno contra BBS reales desde el ZX81 (EXAMPLES/TELNET/telnet.asm),
+;  con el codigo de referencia ya escrito y probado alli. Cada bloque de
+;  aqui abajo cita el numero de esa lista.
+;
 ;  LAS CUATRO PRIMITIVAS DEL MCU
 ;
 ;  net_read/net_write y sus tres ayudantes (sd_clk/mcu_send/mcu_recv)
@@ -47,6 +53,8 @@
 ;  net_read pide hasta 128 bytes de una, el bufer entero del MCU: un
 ;  comando por rafaga en vez de uno por byte. net_write manda la tecla
 ;  en el momento, sin acumular -- para una tecla suelta no compensa.
+;  net_read guarda ademas el estado de la conexion en (net_st) -- lo
+;  usan las mejoras 5 y 6.
 ;
 ;  LA IMPRESION TAMPOCO PASA POR EL BDOS
 ;
@@ -64,13 +72,11 @@
 ;
 ;  EL VOLCADO
 ;
-;  Guarda los bytes crudos, sin filtrar ni traducir: es para ver que
-;  secuencias de escape manda la otra punta y cuales no entendemos. El
-;  nombre sale del FCB que el propio CP/M ya ha rellenado en $005C con
-;  el primer argumento, asi que no hay que parsear nada. Arranca APAGADO
-;  aunque se haya dado nombre de fichero (ENTER+8 para encenderlo): lo
-;  que interesa diagnosticar suele estar al final de la sesion, detras
-;  de kilobytes de arte ANSI que no aportan nada.
+;  Guarda los bytes crudos SIN FILTRAR, antes del filtro de telnet
+;  (mejora 1): es para ver que manda de verdad la otra punta, IAC
+;  incluido. Arranca APAGADO aunque se haya dado nombre de fichero
+;  (ENTER+8 para encenderlo): lo que interesa diagnosticar suele estar
+;  al final de la sesion, detras de kilobytes de arte ANSI.
 ;
 ;  AVISO: escribir en disco lleva su tiempo, y mientras tanto no se lee
 ;  del MCU. El bufer de entrada del MCU son 2 KB, asi que en una rafaga
@@ -109,6 +115,18 @@ RXMAX       equ  128        ; lo que cabe en un solo NET_READ
 ; direcciones internas de bank.z80, que se mueven si el fichero cambia.
 BIOS_CONOUT equ  0FF0Ch
 
+; TERM_ARROWS: ver memmap.inc (CTBLORG+17) y la nota junto a ck_nse en
+; chario.z80. A 1 mientras TERM esta corriendo -- las flechas WordStar
+; que devuelve kbget se convierten alli en 81h-84h, y aqui, al leerlas,
+; en secuencias ANSI (mejora 2). Se pone a 1 en start y a 0 en TODAS las
+; salidas; wboot (BIOSKRNL.ASM) tambien lo fuerza a 0 por si acaso.
+TERM_ARROWS equ  0F6F8h
+
+KEY_UP      equ  081h       ; -> ESC [ A
+KEY_DOWN    equ  082h       ; -> ESC [ B
+KEY_RIGHT   equ  083h       ; -> ESC [ C
+KEY_LEFT    equ  084h       ; -> ESC [ D
+
 ; Tecla de salida. ^] es el estandar de telnet, pero si en el teclado
 ; del ZX81 no hay forma comoda de teclearla, cambia este valor por algo
 ; que si se pueda -- teniendo en cuenta que esa tecla deja de poder
@@ -126,10 +144,9 @@ EXITKEY     equ  01Dh       ; Ctrl-]   (ENTER+0 en el teclado del ZX81)
 ; Arranca APAGADO: lo normal es pasar mas rato conectado que marcando, y
 ; ver doble molesta mas que teclear a ciegas doce caracteres.
 ;
-; La alternativa buena es ATE1, que deja el eco en manos del modem: lo
-; hace en modo comando y lo quita al conectar, sin que el terminal tenga
-; que saber nada. Esto de aqui funciona ademas cuando no hay interprete
-; AT al otro lado.
+; La mejora 5 (ATE1 automatico) cubre el caso peor: si nadie ha encendido
+; el eco del modem, los comandos AT se ven igual sin necesidad de que el
+; usuario encienda TAMBIEN el eco local.
 ECHOKEY     equ  01Ch       ; Ctrl-\   (ENTER+9)
 
 ; Conmutador del volcado. Ver la nota de la cabecera.
@@ -142,6 +159,32 @@ start:      ld   de,msg_on
             call BDOS
             call log_open
 
+            ld   a,1                ; mejora 2: activar flechas ANSI
+            ld   (TERM_ARROWS),a    ; mientras dure esta sesion
+
+; ---------------------------------------------------------------------
+;  Mejora 5: si al arrancar no hay conexion, encender el eco del modem
+;  (ATE1) para poder ver los comandos AT que se tecleen a ciegas. Si
+;  otro programa dejo el eco apagado (ATE0), sin esto no se veria nada
+;  de lo que se teclea hasta que la BBS conteste.
+; ---------------------------------------------------------------------
+            ld   hl,rxbuf
+            ld   b,0
+            call net_read           ; max=0: solo para leer (net_st)
+            ld   a,(net_st)
+            cp   2
+            jr   z,loop              ; ya conectado: no tocar el eco
+            ld   hl,at_e1
+            ld   b,5                 ; "ATE1",13
+            call net_write
+            ld   b,8                 ; ~0,5 s: drenar lo que conteste
+ate_drain:  push bc
+            ld   hl,rxbuf
+            ld   b,RXMAX
+            call net_read
+            pop  bc
+            djnz ate_drain
+
 ; ---------------------------------------------------------------------
 ;  Bucle principal. Cada vuelta pide hasta 128 bytes de una (un unico
 ;  comando MCU), los imprime, y mira el teclado -- todo sin bloquear en
@@ -153,16 +196,17 @@ loop:       ld   hl,rxbuf
             ld   a,b
             or   a
             jr   z,do_kbd           ; nada: directo al teclado
-            ld   c,a                 ; C = cuantos quedan por imprimir/grabar
+            ld   c,a                 ; C = cuantos quedan por procesar
             ld   hl,rxbuf
 pr_loop:    ld   a,(hl)
             push hl
             push bc
             ld   (rxbyte),a
-            ld   c,a
-            call BIOS_CONOUT         ; imprimir SIN pasar por el BDOS
-            ld   a,(rxbyte)
-            call log_byte
+            call log_byte           ; el byte CRUDO, antes del filtro
+                                     ; de telnet (mejora 1)
+            ld   a,(rxbyte)         ; recargar: log_byte destruye A
+            call rx_byte            ; filtra IAC/WILL/DO...; imprime lo
+                                     ; que quede con BIOS_CONOUT
             pop  bc
             pop  hl
             inc  hl
@@ -184,20 +228,31 @@ do_kbd:     ld   c,F_CONIO          ; hay tecla?
             cp   LOGKEY
             jr   z,do_log
             ld   (txbyte),a
-            ld   hl,txbyte
+
+; Mejora 2: una flecha (81h-84h, solo posibles con TERM_ARROWS activo,
+; ver chario.z80/ck_nse) se manda como ESC[A/B/C/D en vez del byte tal
+; cual.
+            cp   KEY_UP
+            jr   c,kb_plain
+            cp   KEY_LEFT+1
+            jr   nc,kb_plain
+            sub  KEY_UP-'A'         ; 81h..84h -> 'A'..'D'
+            ld   (arrow_seq+2),a
+            ld   hl,arrow_seq
+            ld   b,3
+            call net_write
+            jr   kb_echo
+
+kb_plain:   ld   hl,txbyte
             ld   b,1
             call net_write          ; mandarla, tambien sin pasar por CP/M
-            ld   a,(localecho)
+
+kb_echo:    ld   a,(localecho)
             or   a
             jr   z,loop
             ld   a,(txbyte)         ; y, si toca, pintarla aqui tambien
-            ld   c,a
-            call BIOS_CONOUT
-            cp   00Dh               ; al otro lado va solo el CR, pero en
-            jr   nz,loop            ; pantalla hace falta el LF o se
-            ld   c,00Ah             ; reescribe encima de la misma linea
-            call BIOS_CONOUT
-            jp   loop
+            call echo_char          ; mejora 3: notacion ^X para los
+            jp   loop               ; controles; CR saca tambien LF
 
 ; --- conmutar el eco local, y decir como ha quedado -------------------
 do_echo:    ld   a,(localecho)
@@ -226,7 +281,31 @@ dl_say:     ld   c,F_PRINT
             call BDOS
             jp   loop
 
-done:       call log_close
+; ---------------------------------------------------------------------
+;  Mejora 6: si hay conexion, colgar como un modem antes de salir --
+;  si no, la sesion se queda abierta en el ESP32. El tiempo de guarda de
+;  "+++" (un segundo de silencio antes y despues) NO es opcional: el
+;  ESP32 lo exige, o toma los "+" como datos de la sesion.
+; ---------------------------------------------------------------------
+done:       ld   hl,rxbuf
+            ld   b,0
+            call net_read           ; solo para el estado
+            ld   a,(net_st)
+            cp   2
+            jr   nz,dn1
+            ld   b,55                ; ~1,1 s de silencio
+            call wait_vsync
+            ld   hl,at_esc           ; "+++"
+            ld   b,3
+            call net_write
+            ld   b,55                ; ~1,1 s de silencio
+            call wait_vsync
+            ld   hl,at_h             ; "ATH",13
+            ld   b,4
+            call net_write
+dn1:        xor  a
+            ld   (TERM_ARROWS),a    ; mejora 2: flechas WordStar de vuelta
+            call log_close
             ld   de,msg_off
             ld   c,F_PRINT
             call BDOS
@@ -234,11 +313,165 @@ done:       call log_close
             jp   BDOS
 
 ; ---------------------------------------------------------------------
+;  Mejora 1: filtro de la negociacion telnet (IAC). A = byte recibido.
+;  Referencia y estados: telnet_to_cpm_term.md (SD81-Booster).
+;
+;  Estados (tn_state): 0 normal, 1 detras de IAC, 2 esperando la opcion
+;  de WILL/WONT/DO/DONT, 3 dentro de SB, 4 IAC dentro de SB.
+; ---------------------------------------------------------------------
+T_SE        equ  0F0h
+T_SB        equ  0FAh
+T_WILL      equ  0FBh
+T_WONT      equ  0FCh
+T_DO        equ  0FDh
+T_DONT      equ  0FEh
+T_IAC       equ  0FFh
+T_ECHO      equ  1
+T_SGA       equ  3
+
+rx_byte:    ld   c,a
+            ld   a,(tn_state)
+            or   a
+            jr   nz,tn_seq
+            ld   a,c
+            cp   T_IAC
+            jp   nz,pintar
+            ld   a,1
+            ld   (tn_state),a
+            ret
+tn_seq:     dec  a
+            jr   nz,tn_s2
+            ld   a,c                ; estado 1: el comando
+            cp   T_IAC
+            jr   nz,tn1
+            xor  a                  ; IAC IAC = el byte 255
+            ld   (tn_state),a
+            jp   pintar
+tn1:        cp   T_SB
+            jr   nz,tn2
+            ld   a,3
+            ld   (tn_state),a
+            ret
+tn2:        cp   T_WILL
+            jr   c,tn_end           ; NOP, GA...: comandos de 2 bytes
+            ld   (tn_cmd),a
+            ld   a,2
+            ld   (tn_state),a
+            ret
+tn_s2:      dec  a
+            jr   nz,tn_s3
+            ld   a,c                ; estado 2: la opcion
+            ld   (tn_opt),a
+            xor  a
+            ld   (tn_state),a
+            ld   a,(tn_cmd)
+            cp   T_WILL
+            jr   nz,tn_do
+            ld   a,(tn_opt)
+            cp   T_ECHO
+            jr   z,tn_rdo
+            cp   T_SGA
+            jr   z,tn_rdo
+            ld   a,T_DONT
+            jr   tn_send
+tn_rdo:     ld   a,T_DO
+            jr   tn_send
+tn_do:      cp   T_DO
+            ret  nz                 ; WONT/DONT: no se contestan
+            ld   a,(tn_opt)
+            cp   T_SGA
+            ld   a,T_WILL
+            jr   z,tn_send
+            ld   a,T_WONT
+tn_send:    ld   (tn_resp+1),a
+            ld   a,(tn_opt)
+            ld   (tn_resp+2),a
+            ld   hl,tn_resp
+            ld   b,3
+            jp   net_write
+tn_s3:      dec  a
+            jr   nz,tn_s4
+            ld   a,c                ; estado 3: dentro de SB, hasta IAC
+            cp   T_IAC
+            ret  nz
+            ld   a,4
+            ld   (tn_state),a
+            ret
+tn_s4:      ld   a,c                ; estado 4: IAC SE termina; otra cosa
+            cp   T_SE               ; sigue dentro
+            ld   a,3
+            jr   nz,tn_st
+tn_end:     xor  a
+tn_st:      ld   (tn_state),a
+            ret
+
+pintar:     ld   c,a
+            jp   BIOS_CONOUT
+
+tn_resp:    defb T_IAC,0,0
+tn_state:   defb 0
+tn_cmd:     defb 0
+tn_opt:     defb 0
+
+; ---------------------------------------------------------------------
+;  Mejora 3: eco local de los controles en notacion ^X (ESC=^[, DEL=^?,
+;  etc.), como cualquier terminal de siempre. BS y TAB se ejecutan tal
+;  cual (se ven ellos mismos). El CR sigue sacando tambien un LF, igual
+;  que antes.
+; ---------------------------------------------------------------------
+echo_char:  cp   00Dh
+            jr   nz,ec1
+            ld   c,a
+            call BIOS_CONOUT
+            ld   c,00Ah
+            jp   BIOS_CONOUT
+ec1:        cp   008h
+            jr   z,ec_out
+            cp   009h
+            jr   z,ec_out
+            cp   07Fh               ; DEL -> ^?
+            jr   z,ec_ctl
+            cp   020h
+            jr   nc,ec_out
+ec_ctl:     push af
+            ld   c,'^'
+            call BIOS_CONOUT
+            pop  af
+            xor  040h               ; ^A..^_ y ^? (7Fh xor 40h = 3Fh)
+ec_out:     ld   c,a
+            jp   BIOS_CONOUT
+
+; ---------------------------------------------------------------------
+;  wait_vsync - espera B semiciclos de VSYNC (cada uno, ~1/50 s a 50Hz).
+;  Mismo puerto y formato que cursor_blink_poll (chario.z80): bits 6-1
+;  de $AF son los pulsos VSYNC desde la ultima lectura de este puerto.
+;  Usado solo por la mejora 6, para el tiempo de guarda de "+++".
+; ---------------------------------------------------------------------
+wait_vsync: push bc
+            xor  a
+            ld   (vs_acc),a
+wv_loop:    in   a,(ClkPort)
+            and  07Eh
+            rrca
+            or   a
+            jr   z,wv_loop          ; nada nuevo desde la ultima lectura
+            ld   c,a
+            ld   a,(vs_acc)
+            add  a,c
+            ld   (vs_acc),a
+            cp   b
+            jr   c,wv_loop
+            pop  bc
+            ret
+
+; ---------------------------------------------------------------------
 ;  net_read  - lee hasta B bytes en (HL). Devuelve B = leidos.
 ;  net_write - envia B bytes desde (HL). Devuelve B = aceptados.
 ;
-;  Identicas a las de net.z80. Ver la nota de la cabecera sobre C (el
-;  reloj del handshake) y A (no sobrevive a mcu_send).
+;  Identicas a las de net.z80, salvo que aqui el estado de la conexion
+;  se guarda en (net_st) -- lo usan las mejoras 5 y 6. Ver la nota de la
+;  cabecera sobre C (el reloj del handshake) y A (no sobrevive a
+;  mcu_send).
 ; ---------------------------------------------------------------------
 net_read:   push hl
             ld   d,b
@@ -257,7 +490,8 @@ nr_loop:    call mcu_recv
             inc  hl
             djnz nr_loop
 nr_tail:    call mcu_recv           ; avail
-            call mcu_recv           ; status (se ignora, ver net.z80)
+            call mcu_recv           ; status
+            ld   (net_st),a
             ld   b,d
             pop  hl
             ret
@@ -413,10 +647,16 @@ lc_shut:    ld   de,FCB
 ; ---------------------------------------------------------------------
 rxbyte:     defb 0                  ; el byte que se acaba de recibir
 txbyte:     defb 0                  ; ...y el que se acaba de teclear
+net_st:     defb 0                  ; estado de la conexion (mejoras 5/6)
+vs_acc:     defb 0                  ; acumulador de wait_vsync
 localecho:  defb 0                  ; 1 = eco local (media duplex)
 logging:    defb 0                  ; 1 = hay fichero abierto y utilizable
 logrec:     defb 0                  ; 1 = grabando ahora mismo (LOGKEY)
 logcnt:     defb 0                  ; bytes ya metidos en el registro
+arrow_seq:  defb 01Bh,'[',0         ; ESC [ letra (mejora 2)
+at_e1:      defb 'ATE1',13          ; mejora 5
+at_esc:     defb '+++'              ; mejora 6
+at_h:       defb 'ATH',13
 logbuf:     defs 128
 rxbuf:      defs RXMAX
 

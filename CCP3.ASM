@@ -461,6 +461,31 @@ ckboot:	mvi	l,ccpflag3
 	jmp	chain		;attempt to exec profile.sub
 profile:
 	db	'PROFILE.S',0
+; CPM3_SD81: "chain" (arriba) siempre copia tpa-buf-1 (127) bytes desde
+; HL con "move" -- una copia CIEGA, sin mirar el "0" final ("move" hace
+; "dcr c / jnz move", sin comprobar el contenido). Cuando HL=buf (el
+; camino normal, linea 441) eso es seguro: buf son literalmente esos
+; 127 bytes ($0080-$00FE). Pero aqui HL=profile, una constante de solo
+; 10 bytes -- sin este relleno, la copia sigue leyendo 117 bytes de lo
+; que venga despues en el binario ensamblado (codigo de la propia CCP),
+; y eso es lo que la CCP "ve" como si el usuario lo hubiera tecleado: la
+; pantalla se llena de basura la primera vez que existe un PROFILE.SUB
+; de verdad y este camino se ejecuta por primera vez.
+;
+; Bug de DRI, no de este puerto (no hay ningun "CPM3_SD81:" en el bloque
+; original): en el binario que DRI ensamblo en su dia, lo que seguia a
+; "profile" en esos 117 bytes seria otra cosa (quiza inocua, quiza no) y
+; nadie lo habria notado si nunca fallaba de forma visible. Aqui, al
+; reensamblar, esos 117 bytes caen sobre codigo real de la CCP.
+;
+; El arreglo minimo: rellenar con ceros hasta completar los 127 bytes
+; que "chain" va a copiar de todas formas, en vez de tocar la logica de
+; "chain"/"move" (que sirve bien para su otro uso, con HL=buf). "PROFILE"
+; con 0 de relleno actua como una linea de comandos vacia si "chain"
+; llegara a leer mas alla del nombre real -- la CCP corta en el primer
+; separador/terminador al parsear, igual que con cualquier linea corta
+; metida en un buffer mas grande.
+	ds	7Fh-($-profile)
 ;
 ;
 ;

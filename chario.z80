@@ -71,6 +71,12 @@ chario$save equ $            ; ver el "org" de cierre mas abajo
 
             defb 0                  ; terminador de tabla
 
+; Ver la nota en memmap.inc. "org" explicito (y no solo la posicion que
+; toque a continuacion): si el tamano de @ctbl cambiara algun dia, esto
+; lo detecta el ensamblador en vez de desplazarse en silencio.
+            org  TERM_ARROWS
+            defb 0                  ; 0 = flechas WordStar, 1 = flechas ANSI
+
             ds   0F704h-$        ; guarda: detras, ldccp_real (init.z80)
 
 ; El estado comun de biosd (bank.z80), en el hueco que @ctbl dejo libre
@@ -154,6 +160,8 @@ con_co:
             jr   z,co_lf
             cp   08h
             jr   z,co_bs
+            cp   09h                ; TAB
+            jr   z,co_tab
             cp   20h
             ret  c                  ; otros controles -> ignorar
 ; CPM3_SD81: aqui habia un "cp 080h / ret nc" que tiraba todo lo que no
@@ -168,6 +176,20 @@ co_cr:      xor  a
             ld   (cur_col),a
             ret
 co_lf:      jp   vtnl
+; TAB de verdad: antes llegaba filtrado, porque las funciones 2/9 del
+; BDOS lo expanden antes de llamar al BIOS. TERM.COM escribe directo en
+; CONOUT (ver telnet_to_cpm_term.md), asi que los tabuladores que manda
+; una BBS llegaban aqui crudos y se perdian -- el texto salia
+; descolocado. A la siguiente columna multiplo de 8, como mucho hasta la
+; ultima.
+co_tab:     ld   a,(cur_col)
+            and  0F8h
+            add  a,8
+            cp   SCRW
+            jr   c,ct_ok
+            ld   a,SCRW-1
+ct_ok:      ld   (cur_col),a
+            ret
 co_bs:      ld   a,(cur_col)
             or   a
             ret  z
@@ -551,6 +573,45 @@ chario$ansi$save equ $
 
             org  ANSIORG
 
+; ---------------------------------------------------------------------
+;  ck_arrow - continuacion de ck_nse (chario.z80, tramo $8000-$89FF) con
+;  TERM_ARROWS activo. HL ya viene puesto a keymap_shift desde ck_nse;
+;  aqui se hace la misma busqueda que haria ck_tbl, pero pasando el
+;  resultado por arrow_code antes de seguir. No cabia entero en el
+;  tramo apretado del XIOS -- ver telnet_to_cpm_term.md (SD81-Booster).
+; ---------------------------------------------------------------------
+ck_arrow:   ld   a,(km_idx)
+            ld   c,a
+            ld   b,0
+            add  hl,bc
+            ld   a,(hl)
+            call arrow_code         ; A = codigo (cambiado si es flecha)
+            or   a
+            jp   z,ck_top           ; sin ASCII -> reesperar (igual que ck_tbl)
+            jp   ck_mods
+
+; arrow_code - A = codigo de keymap_shift -> 81h-84h si es una de las
+; cuatro flechas WordStar (^E ^X ^D ^S), sin tocar nada mas. Son valores
+; que ninguna otra tecla genera nunca, asi que TERM los distingue sin
+; ambiguedad y los convierte en ESC[A/B/C/D al mandarlos. El modo CTRL
+; (SHIFT+ENTER+letra, ck_ctrl) es un camino DISTINTO que no pasa por
+; aqui, asi que CTRL+E/X/D/S tecleados a proposito siguen llegando tal
+; cual.
+arrow_code: cp   005h               ; ^E arriba
+            ld   c,081h
+            jr   z,ac_set
+            cp   018h               ; ^X abajo
+            ld   c,082h
+            jr   z,ac_set
+            cp   004h               ; ^D derecha
+            ld   c,083h
+            jr   z,ac_set
+            cp   013h               ; ^S izquierda
+            ld   c,084h
+            ret  nz
+ac_set:     ld   a,c
+            ret
+
 ; --- SCP/RCP: ESC[s guarda la posicion, ESC[u la restaura ------------
 ansi_scp:   ld   a,(cur_row)
             ld   (sav_row),a
@@ -894,6 +955,13 @@ ck_rel:     call scan_keys          ; esperar a soltar la tecla; ACUMULAR mods
 ck_nse:     bit  0,a                ; SHIFT -> mayusculas/funciones
             jr   z,ck_tbl
             ld   hl,keymap_shift
+; Con TERM activo (TERM_ARROWS=1), las cuatro flechas WordStar de esta
+; misma tabla (^E ^X ^D ^S) se devuelven como 81h-84h en vez de su
+; codigo normal -- ver la nota junto a ck_arrow, en ANSIORG (el tramo
+; $8000-$89FF va demasiado justo para tenerlo aqui entero).
+            ld   a,(TERM_ARROWS)
+            or   a
+            jp   nz,ck_arrow
 ck_tbl:     ld   a,(km_idx)
             ld   c,a
             ld   b,0

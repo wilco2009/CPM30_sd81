@@ -226,6 +226,23 @@ DTBLORG      equ 0F618h
 CTBLORG      equ 0F6E7h
 
 ; ---------------------------------------------------------------------
+;  TERM_ARROWS -- indicador de si TERM.COM esta activo, para que kbget
+;  (chario.z80) convierta las flechas WordStar (SHIFT+5/6/7/8 = ^S ^X
+;  ^E ^D) en las secuencias ANSI que espera una BBS (ESC[D/B/A/C) SOLO
+;  mientras TERM esta corriendo. El resto del sistema (WordStar, Turbo
+;  Pascal...) sigue viendo las flechas de siempre.
+;
+;  Banco comun a proposito: TERM vive en la TPA (banco de usuario) y
+;  kbget en el banco de sistema -- los dos necesitan ver el MISMO byte
+;  sin cambiar de contexto para consultarlo. 0 = flechas WordStar
+;  (por defecto), 1 = flechas ANSI.
+;
+;  Vive en el hueco de 12 bytes que queda detras de @ctbl (chario.z80),
+;  17 bytes despues de CTBLORG -- ver la nota de arriba.
+; ---------------------------------------------------------------------
+TERM_ARROWS  equ CTBLORG+17
+
+; ---------------------------------------------------------------------
 ;  rtc.z80, fuera del hueco apretado del XIOS.
 ;
 ;  El tramo $8000-$89FF (entre BIOSKRNL y el "org 08A00h" de BDOS.ASM) ya

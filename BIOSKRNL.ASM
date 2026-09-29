@@ -207,6 +207,16 @@ boot$1:
 	;	Entry for system restarts.
 
 wboot:
+; CPM3_SD81: red de seguridad para TERM_ARROWS (chario.z80/memmap.inc).
+; Si TERM.COM no llega a su salida normal (reset, Ctrl-C duro, un
+; cuelgue cualquiera), el indicador se quedaria a 1 y el resto de
+; programas verian las flechas como ESC[A/B/C/D en vez de ^E/^X/^D/^S
+; -- WordStar y Turbo Pascal dejarian de reconocerlas. wboot es el
+; unico sitio por el que pasa CUALQUIER vuelta al CCP, salga como salga
+; el programa anterior, asi que es el sitio para forzarlo a 0 de forma
+; incondicional.
+	xor a
+	sta TERM_ARROWS
 	lxi sp,boot$stack
 	call set$jumps		; initialize page zero
 	call ?rlccp		; reload CCP
